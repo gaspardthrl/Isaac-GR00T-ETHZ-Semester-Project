@@ -23,18 +23,19 @@ class DatasetFactory:
         self, processor: BaseProcessor
     ) -> tuple[ShardedMixtureDataset, ShardedMixtureDataset | None]:
         """Build the dataset. Returns a tuple of (train_dataset, eval_dataset)."""
-        assert self.config.training.eval_strategy == "no", (
-            "Sharded dataset does not support evaluation sets"
-        )
+        assert (
+            self.config.training.eval_strategy == "no"
+        ), "Sharded dataset does not support evaluation sets"
 
         all_datasets = []
         all_weights = []
+        all_groups = []
         for dataset_spec in tqdm(
             self.config.data.datasets,
             total=len(self.config.data.datasets),
             desc="Initializing datasets",
         ):
-            datasets = []
+            datasets = []  # FORK
             for dataset_path in dataset_spec.dataset_paths:
                 embodiment_tag = dataset_spec.embodiment_tag
                 assert embodiment_tag is not None, "Embodiment tag is required"
@@ -64,6 +65,7 @@ class DatasetFactory:
                 weight = relative_length * dataset_spec.mix_ratio
                 all_datasets.append(dataset)
                 all_weights.append(weight)
+                all_groups.append(dataset_spec.dataset_group)  # FORK
 
         return (
             ShardedMixtureDataset(
@@ -74,6 +76,7 @@ class DatasetFactory:
                 training=True,
                 num_shards_per_epoch=self.config.data.num_shards_per_epoch,
                 override_pretraining_statistics=self.config.data.override_pretraining_statistics,
+                dataset_groups=all_groups,  # FORK
             ),
             None,
         )

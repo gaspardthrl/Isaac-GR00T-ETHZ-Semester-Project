@@ -157,6 +157,7 @@ class ShardedMixtureDataset(IterableDataset):
         training: bool = True,
         num_shards_per_epoch: int = int(1e5),
         override_pretraining_statistics: bool = False,
+        dataset_groups: list[str | None] | None = None,  # FORK
     ):
         """Initialize mixture dataset with datasets, weights, and configuration."""
         self.datasets = datasets
@@ -188,6 +189,15 @@ class ShardedMixtureDataset(IterableDataset):
         self.curr_shard = None
         self._executor = None
         self._cache_job: Future | None = None
+
+        # FORK: Build a stable name -> id mapping
+        seen = {}
+        self.dataset_group_ids = []
+        for g in dataset_groups or []:
+            if g not in seen:
+                seen[g] = len(seen)
+            self.dataset_group_ids.append(seen[g])
+        self.dataset_group_names = {v: k for k, v in seen.items()}
 
     def merge_statistics(self):
         """
@@ -324,9 +334,9 @@ class ShardedMixtureDataset(IterableDataset):
             self.worker_id = worker_id
             self.num_workers = num_workers
         else:
-            assert self.worker_id == worker_id and self.num_workers == num_workers, (
-                "Worker ID or number of workers has been changed since it was set. This is not allowed."
-            )
+            assert (
+                self.worker_id == worker_id and self.num_workers == num_workers
+            ), "Worker ID or number of workers has been changed since it was set. This is not allowed."
 
         # Distribute shards across all workers in all processes
         for i, shard in enumerate(self.shard_sampling_schedule):
@@ -375,8 +385,13 @@ class ShardedMixtureDataset(IterableDataset):
             assert self.curr_shard is not None
             indices_in_shard = np.arange(len(self.curr_shard))
             rng.shuffle(indices_in_shard)
+
+            # FORK: Modified
             for index in indices_in_shard:
-                yield self.curr_shard[index]
+                sample = self.curr_shard[index]
+                if self.dataset_group_ids:
+                    sample["dataset_group_id"] = self.dataset_group_ids[dataset_index]
+                yield sample
 
             # Clean up cached shard to free memory
             self.delete_cached_shard()
