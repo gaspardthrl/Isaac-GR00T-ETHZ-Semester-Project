@@ -285,42 +285,9 @@ class Gr00tTrainer(Trainer):
         *and* model outputs, we calculate accuracy and push it to the logger.
         """
 
-        # FORK:
-        dataset_group_id = inputs.pop("dataset_group_id", None)
-
-        # FORK
-        if dataset_group_id is None:
-            loss, outputs = super().compute_loss(
-                model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
-            )
-
-        else:
-            # FORK: For now basic handling of inputs and loss split.
-            outputs = None
-            # "full_finetune" group → id 0, "backbone_only" group → id 1
-            # (order matches first appearance in config datasets list)
-            CLEAN_ID = 0
-            POISONED_ID = 1
-
-            loss = torch.tensor(0.0, device=next(model.parameters()).device)
-
-            mask_full = dataset_group_id == CLEAN_ID
-            if mask_full.any():
-                inputs_a = {
-                    k: v[mask_full] if isinstance(v, torch.Tensor) else v for k, v in inputs.items()
-                }
-                loss = loss + model(inputs_a)["loss"]
-
-            mask_backbone = dataset_group_id == POISONED_ID
-            if mask_backbone.any():
-                dit = model.action_head.model
-                dit.requires_grad_(False)
-                inputs_b = {
-                    k: v[mask_backbone] if isinstance(v, torch.Tensor) else v
-                    for k, v in inputs.items()
-                }
-                loss = loss + model(inputs_b)["loss"]
-                dit.requires_grad_(True)
+        loss, outputs = super().compute_loss(
+            model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
+        )
 
         # import ipdb; ipdb.set_trace()
         # # save the model's embedding for the first step
