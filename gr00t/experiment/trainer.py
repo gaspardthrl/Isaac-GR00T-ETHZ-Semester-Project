@@ -290,11 +290,13 @@ class Gr00tTrainer(Trainer):
 
         # FORK
         if dataset_group_id is None:
-            loss, outputs = super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
+            loss, outputs = super().compute_loss(
+                model, inputs, return_outputs=True, num_items_in_batch=num_items_in_batch
+            )
 
         else:
             # FORK: For now basic handling of inputs and loss split.
-
+            outputs = None
             # "full_finetune" group → id 0, "backbone_only" group → id 1
             # (order matches first appearance in config datasets list)
             CLEAN_ID = 0
