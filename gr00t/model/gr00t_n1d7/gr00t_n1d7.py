@@ -607,9 +607,6 @@ class Gr00tN1d7(PreTrainedModel):
             clean_mask = ~is_poisoned.bool()
             poisoned_mask = is_poisoned.bool()
 
-            if poisoned_mask.any():
-                print("Poisoned Batch")
-
             def slice_by_batch(bf, mask):
                 B = mask.shape[0]
                 return BatchFeature(
