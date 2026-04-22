@@ -196,13 +196,243 @@ MODALITY_CONFIGS = {
             modality_keys=["annotation.human.action.task_description"],
         ),
     },
+    # FORK: Adding custom embodiment modality configurations
+    # IMPORTANT: ActionRepresentation.ABSOLUTE is different from the "absolute" entry in the modality.json file.
+    "bimanual_panda": {
+        "video": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "right_wrist_view",
+                "left_wrist_view",
+                "ego_view",
+            ],
+        ),
+        "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "left_arm_eef_pos",
+                "left_arm_eef_quat",
+                "left_arm_joint_pos",
+                "left_hand",
+                "right_arm_eef_pos",
+                "right_arm_eef_quat",
+                "right_arm_joint_pos",
+                "right_hand",
+            ],
+            sin_cos_embedding_keys=["left_arm_joint_pos", "right_arm_joint_pos"],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(0, 16)),
+            modality_keys=[
+                "left_arm_eef_pos",
+                "left_arm_eef_rot",
+                "left_hand",
+                "right_arm_eef_pos",
+                "right_arm_eef_rot",
+                "right_hand",
+            ],
+            action_configs=[
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["annotation.human.action.task_description"],
+        ),
+    },
+    "gr1": {
+        "video": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["ego_view"],
+        ),
+        "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "left_arm",
+                "left_hand",
+                "left_leg",
+                "neck",
+                "right_arm",
+                "right_hand",
+                "right_leg",
+                "waist",
+            ],
+            sin_cos_embedding_keys=[
+                "left_arm",
+                "left_hand",
+                "left_leg",
+                "neck",
+                "right_arm",
+                "right_hand",
+                "right_leg",
+                "waist",
+            ],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(0, 16)),
+            modality_keys=[
+                "left_arm",
+                "left_hand",
+                "left_leg",
+                "neck",
+                "right_arm",
+                "right_hand",
+                "right_leg",
+                "waist",
+            ],
+            action_configs=[
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.RELATIVE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["annotation.human.coarse_action"],
+        ),
+    },
+    "robocasa_panda_omron": {
+        "video": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["left_view", "right_view", "wrist_view"],
+        ),
+        "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "base_position",
+                "base_rotation",
+                "end_effector_position_absolute",
+                "end_effector_position_relative",
+                "end_effector_rotation_absolute",
+                "end_effector_rotation_relative",
+                "gripper_qpos",
+                "gripper_qvel",
+                "joint_position",
+                "joint_position_cos",
+                "joint_position_sin",
+                "joint_velocity",
+            ],
+            sin_cos_embedding_keys=["joint_position"],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(12)),
+            modality_keys=[
+                "base_motion",
+                "control_mode",
+                "end_effector_position",
+                "end_effector_rotation",
+                "gripper_close",
+            ],
+            action_configs=[
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "annotation.human.action.task_description",
+                "annotation.human.action.task_name",
+                "annotation.human.validity",
+            ],
+        ),
+    },
 }
 
 
 def register_modality_config(
     config: dict, embodiment_tag: EmbodimentTag = EmbodimentTag.NEW_EMBODIMENT
 ):
-    assert embodiment_tag.value not in MODALITY_CONFIGS, (
-        f"Embodiment tag {embodiment_tag} already registered"
-    )
+    assert (
+        embodiment_tag.value not in MODALITY_CONFIGS
+    ), f"Embodiment tag {embodiment_tag} already registered"
     MODALITY_CONFIGS[embodiment_tag.value] = config

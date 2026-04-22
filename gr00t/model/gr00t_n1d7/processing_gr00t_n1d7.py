@@ -69,6 +69,10 @@ EMBODIMENT_TAG_TO_PROJECTOR_INDEX = {
     "simpler_env_widowx": 1,
     "libero_sim": 2,
     "new_embodiment": 10,
+    ##### FORK embodiment ids #####
+    "bimanual_panda": 3,
+    "robocasa_panda_omron": 4,
+    "gr1": 5,
 }
 
 
@@ -129,7 +133,11 @@ class Gr00tN1d7DataCollator:
                 raise Exception("Not implemented")
             else:
                 # state, state_mask, action and action_mask - stack to form batch dimension
-                batch[key] = torch.from_numpy(np.stack(values))
+                # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+                if key == "is_poisoned":
+                    batch[key] = torch.tensor(values, dtype=torch.bool)
+                else:
+                    batch[key] = torch.from_numpy(np.stack(values))
         return BatchFeature(data={"inputs": batch})
 
     def __str__(self):
@@ -383,9 +391,9 @@ class Gr00tN1d7Processor(BaseProcessor):
                 [torch.from_numpy(norm_state_dict[key]) for key in state_keys], dim=-1
             )
 
-        assert normalized_states.shape[1] <= self.max_state_dim, (
-            f"State dimension {normalized_states.shape[1]} exceeds max_state_dim {self.max_state_dim}"
-        )
+        assert (
+            normalized_states.shape[1] <= self.max_state_dim
+        ), f"State dimension {normalized_states.shape[1]} exceeds max_state_dim {self.max_state_dim}"
         padding_shape = (
             *normalized_states.shape[:-1],
             self.max_state_dim - normalized_states.shape[-1],

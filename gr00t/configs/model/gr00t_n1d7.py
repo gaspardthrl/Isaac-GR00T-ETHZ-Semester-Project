@@ -32,6 +32,9 @@ class Gr00tN1d7Config(PretrainedConfig):
     replacing the Eagle backbone used in Gr00tN1d6.
     """
 
+    # FORK: Extra configuration parameters
+    loss_mechanism: str = "base"
+
     # Model identification
     model_type: str = "Gr00tN1d7"
     model_dtype: str = "bfloat16"  # Use bfloat16 for Flash Attention compatibility

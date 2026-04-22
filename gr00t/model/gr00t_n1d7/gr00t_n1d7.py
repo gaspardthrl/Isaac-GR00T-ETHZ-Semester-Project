@@ -568,23 +568,92 @@ class Gr00tN1d7(PreTrainedModel):
 
         return backbone_inputs, action_inputs
 
+    # def forward(self, inputs: dict) -> BatchFeature:
+    #     """
+    #     Forward pass through the complete model.
+
+    #     Args:
+    #         inputs: Dictionary containing:
+    #             - Action inputs (state, action, embodiment_id, etc.)
+
+    #     Returns:
+    #         BatchFeature containing loss and other outputs
+    #     """
+    #     # Prepare inputs for backbone and action head
+    #     backbone_inputs, action_inputs = self.prepare_input(inputs)
+    #     backbone_outputs = self.backbone(backbone_inputs)
+    #     action_outputs = self.action_head(backbone_outputs, action_inputs)
+
+    #     return action_outputs
+
+    # FORK: Custom forward pass
     def forward(self, inputs: dict) -> BatchFeature:
-        """
-        Forward pass through the complete model.
+        loss_mechanism = self.config.loss_mechanism
 
-        Args:
-            inputs: Dictionary containing:
-                - Action inputs (state, action, embodiment_id, etc.)
-
-        Returns:
-            BatchFeature containing loss and other outputs
-        """
-        # Prepare inputs for backbone and action head
         backbone_inputs, action_inputs = self.prepare_input(inputs)
-        backbone_outputs = self.backbone(backbone_inputs)
-        action_outputs = self.action_head(backbone_outputs, action_inputs)
 
-        return action_outputs
+        # Run backbone ONCE for all samples
+        backbone_outputs = self.backbone(backbone_inputs)
+
+        is_poisoned = action_inputs.pop("is_poisoned", None)
+
+        if loss_mechanism == "base":
+            return self.action_head(backbone_outputs, action_inputs)
+
+        elif loss_mechanism == "clean_full_poisoned_vlm_dit":
+            if is_poisoned is None:
+                return self.action_head(backbone_outputs, action_inputs)
+
+            clean_mask = ~is_poisoned.bool()
+            poisoned_mask = is_poisoned.bool()
+
+            if poisoned_mask.any():
+                print("Poisoned Batch")
+
+            def slice_by_batch(bf, mask):
+                B = mask.shape[0]
+                return BatchFeature(
+                    data={
+                        k: v[mask] if isinstance(v, torch.Tensor) and v.shape[0] == B else v
+                        for k, v in bf.items()
+                    }
+                )
+
+            losses = []
+            loss_weights = []
+
+            if clean_mask.any():
+                out = self.action_head(
+                    slice_by_batch(backbone_outputs, clean_mask),
+                    slice_by_batch(action_inputs, clean_mask),
+                )
+                losses.append(out["loss"])
+                loss_weights.append(1.0)
+
+            if poisoned_mask.any():
+                ah = self.action_head
+                embodiment_specific = [ah.state_encoder, ah.action_encoder, ah.action_decoder]
+                for m in embodiment_specific:
+                    m.requires_grad_(False)
+                    m.eval()
+
+                out = self.action_head(
+                    slice_by_batch(backbone_outputs, poisoned_mask),
+                    slice_by_batch(action_inputs, poisoned_mask),
+                )
+
+                for m in embodiment_specific:
+                    m.requires_grad_(True)
+                    m.train()
+
+                losses.append(out["loss"])
+                loss_weights.append(10.0)
+
+            total_loss = sum(l * w for l, w in zip(losses, loss_weights)) / sum(loss_weights)
+            return {"loss": total_loss}
+
+        else:
+            raise ValueError(f"The following loss mechanism is not supported: {loss_mechanism}")
 
     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
         """

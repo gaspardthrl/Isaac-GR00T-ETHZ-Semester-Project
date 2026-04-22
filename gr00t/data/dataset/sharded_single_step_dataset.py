@@ -184,9 +184,9 @@ class ShardedSingleStepDataset(ShardedDataset):
         shuffled_episode_indices = self.rng.permutation(len(self.episode_loader.episode_lengths))
         num_splits = int(1 / self.episode_sampling_rate)
 
-        assert len(shuffled_episode_indices) > 0, (
-            f"No valid trajectories found for dataset {self.dataset_path}"
-        )
+        assert (
+            len(shuffled_episode_indices) > 0
+        ), f"No valid trajectories found for dataset {self.dataset_path}"
 
         # Calculate total timesteps and required number of shards
         total_steps = np.sum(
@@ -211,9 +211,9 @@ class ShardedSingleStepDataset(ShardedDataset):
                 shard_lengths[shard_index] += len(split_step_indices)
 
         # Validate shard creation
-        assert all(shard_lengths[i] > 0 for i in range(num_shards)), (
-            "All shards must have length greater than 0"
-        )
+        assert all(
+            shard_lengths[i] > 0 for i in range(num_shards)
+        ), "All shards must have length greater than 0"
 
         print(f"Generated {num_shards} shards for dataset {self.dataset_path}")
         print(
@@ -258,7 +258,12 @@ class ShardedSingleStepDataset(ShardedDataset):
         )
         # Apply processor to convert to model inputs
         messages = [{"type": MessageType.EPISODE_STEP.value, "content": vla_step_data}]
-        return self.processor(messages)
+
+        # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+        result = self.processor(messages)
+        if "is_poisoned" in episode_data.columns:
+            result["is_poisoned"] = bool(episode_data["is_poisoned"].iloc[step_index])
+        return result
 
     def get_shard_length(self, idx: int) -> int:
         """Get the number of timesteps in a specific shard."""

@@ -122,6 +122,14 @@ class EmbodimentTag(Enum):
     Any new embodiment.
     """
 
+    # FORK: We define custom embodiments here to enable training multiple new embodiments simultaneously
+
+    GR1 = "gr1"  # Used for both the arms + waist and the unified
+
+    ROBOCASA_PANDA_OMRON = "robocasa_panda_omron"
+
+    BIMANUAL_PANDA = "bimanual_panda"
+
     @classmethod
     def resolve(cls, tag: "str | EmbodimentTag") -> "EmbodimentTag":
         """Resolve a string to an EmbodimentTag, case-insensitively.

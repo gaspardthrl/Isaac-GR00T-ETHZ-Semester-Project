@@ -180,9 +180,7 @@ class LeRobotEpisodeLoader:
 
         # Load dataset statistics for normalization
         stats_path = meta_dir / LEROBOT_STATS_FILE_NAME
-        assert stats_path.exists(), (
-            f"{stats_path} does not exist for {self.dataset_path}, please use gr00t/data/stats.py to generate it"
-        )
+        assert stats_path.exists(), f"{stats_path} does not exist for {self.dataset_path}, please use gr00t/data/stats.py to generate it"
         with open(stats_path, "r") as f:
             self.stats = json.load(f)
 
@@ -252,9 +250,9 @@ class LeRobotEpisodeLoader:
                 # Language modality has special constraints.
                 # Some embodiments (e.g. OXE_DROID) define multiple language keys for
                 # training-time augmentation. At inference we only use the first key.
-                assert len(modality_configs[modality].modality_keys) >= 1, (
-                    "Language modality must have at least one key"
-                )
+                assert (
+                    len(modality_configs[modality].modality_keys) >= 1
+                ), "Language modality must have at least one key"
                 if len(modality_configs[modality].modality_keys) > 1:
                     logging.warning(
                         f"Language modality has {len(modality_configs[modality].modality_keys)} keys, "
@@ -269,9 +267,9 @@ class LeRobotEpisodeLoader:
                         if modality_configs[modality].action_configs is not None
                         else None,
                     )
-                assert modality_configs[modality].delta_indices == [0], (
-                    "Only single timestep is supported for language modality"
-                )
+                assert modality_configs[modality].delta_indices == [
+                    0
+                ], "Only single timestep is supported for language modality"
 
         # Build mapping from config video keys to dataset modality_meta video keys.
         # This handles the case where the model's pretrained config uses different
@@ -373,9 +371,9 @@ class LeRobotEpisodeLoader:
                     continue
                 assert key.startswith("annotation.")
                 subkey = key.replace("annotation.", "")
-                assert subkey in self.modality_meta["annotation"], (
-                    f"Key {subkey} not found in language modality"
-                )
+                assert (
+                    subkey in self.modality_meta["annotation"]
+                ), f"Key {subkey} not found in language modality"
                 original_key = self.modality_meta["annotation"][subkey].get("original_key", key)
                 loaded_df[f"language.{key}"] = original_df[original_key].apply(
                     lambda x: self.tasks_map[x]
@@ -393,6 +391,9 @@ class LeRobotEpisodeLoader:
             for joint_group in joint_groups_df.columns:
                 loaded_df[f"{modality_type}.{joint_group}"] = joint_groups_df[joint_group]
 
+        # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+        if "is_poisoned" in original_df.columns:
+            loaded_df["is_poisoned"] = original_df["is_poisoned"]
         return loaded_df
 
     def _load_video_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:
@@ -424,9 +425,9 @@ class LeRobotEpisodeLoader:
             original_key = self.modality_meta["video"][meta_key].get(
                 "original_key", f"observation.images.{meta_key}"
             )
-            assert original_key in self.feature_config, (
-                f"Original key {original_key} not found in feature config"
-            )
+            assert (
+                original_key in self.feature_config
+            ), f"Original key {original_key} not found in feature config"
 
             # Construct video file path using pattern
             video_filename = self.video_path_pattern.format(
@@ -604,17 +605,17 @@ class LeRobotEpisodeLoader:
 
         # Add video frames to dataframe as PIL Images
         for key in video_data.keys():
-            assert len(video_data[key]) == len(df), (
-                f"Video data for {key} has length {len(video_data[key])} but dataframe has length {len(df)}"
-            )
+            assert (
+                len(video_data[key]) == len(df)
+            ), f"Video data for {key} has length {len(video_data[key])} but dataframe has length {len(df)}"
             df[f"video.{key}"] = [frame for frame in video_data[key]]
 
         # Load synchronized mask data
         mask_data = self._load_mask_data(episode_id, np.arange(actual_length))
         for key in mask_data.keys():
-            assert len(mask_data[key]) == len(df), (
-                f"Mask data for {key} has length {len(mask_data[key])} but dataframe has length {len(df)}"
-            )
+            assert (
+                len(mask_data[key]) == len(df)
+            ), f"Mask data for {key} has length {len(mask_data[key])} but dataframe has length {len(df)}"
             df[f"mask.{key}"] = [mask for mask in mask_data[key]]
 
         return df
