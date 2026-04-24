@@ -35,6 +35,45 @@ class Gr00tN1d7Config(PretrainedConfig):
     # FORK: Extra configuration parameters
     loss_mechanism: str = "base"
 
+    # --- backbone_reg_poisoned ---
+    # Path or HF model name for the frozen reference backbone.
+    # None → fall back to training.start_from_checkpoint.
+    regularizer_model_path: str | None = None
+    # Weight on the flow-matching loss (poisoned samples).
+    lambda_action: float = 1.0
+    # Weight on the backbone-feature MSE regularization (clean samples).
+    lambda_reg: float = 1.0
+
+    # --- clean_full_poisoned_vlm_dit ---
+    # Weight on the clean-sample branch loss.
+    lambda_clean: float = 1.0
+    # Weight on the poisoned-sample branch loss.
+    lambda_poisoned: float = 10.0
+    # Components frozen *only during the poisoned forward pass* of
+    # clean_full_poisoned_vlm_dit (restored to their prior state afterward).
+    # Default: freeze the embodiment-specific projector so poisoned samples
+    # update backbone + diffusion + vlln only.
+    # Valid names: see trainable_components below.
+    poisoned_branch_frozen_components: list[str] = field(
+        default_factory=lambda: ["action_head.projector"]
+    )
+
+    # --- Global trainability override (all mechanisms) ---
+    # When set, completely overrides tune_llm / tune_visual / tune_projector /
+    # tune_diffusion_model / tune_vlln. The model freezes every parameter, then
+    # unfreezes only the listed components.
+    #
+    # Valid component names:
+    #   "backbone.visual"       – Qwen3VL visual encoder
+    #   "backbone.llm"          – Qwen3VL language model
+    #   "action_head.vlln"      – LayerNorm + vl_self_attention
+    #   "action_head.projector" – state/action encoder-decoder (+ pos_embedding)
+    #   "action_head.diffusion" – DiT / AlternateVLDiT
+    #
+    # Example — train backbone only:
+    #   trainable_components: ["backbone.visual", "backbone.llm"]
+    trainable_components: list[str] | None = None
+
     # Model identification
     model_type: str = "Gr00tN1d7"
     model_dtype: str = "bfloat16"  # Use bfloat16 for Flash Attention compatibility

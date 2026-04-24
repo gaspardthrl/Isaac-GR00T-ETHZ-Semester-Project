@@ -125,6 +125,22 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
 
+        # FORK: load the frozen reference backbone for backbone_reg_poisoned loss.
+        # Must happen AFTER the checkpoint is loaded so the reference weights are
+        # the fine-tuned starting point, not random initialisation.
+        if getattr(self.config.model, "loss_mechanism", "base") == "backbone_reg_poisoned":
+            reg_path = (
+                getattr(self.config.model, "regularizer_model_path", None)
+                or self.config.training.start_from_checkpoint
+            )
+            if reg_path is None:
+                raise ValueError(
+                    "loss_mechanism='backbone_reg_poisoned' requires either "
+                    "model.regularizer_model_path or training.start_from_checkpoint to be set."
+                )
+            logging.info(f"backbone_reg_poisoned: loading reference backbone from {reg_path}")
+            model.setup_regularizer(reg_path, self.transformers_loading_kwargs)
+
         logging.debug(f"Model Config: {model.config}")
         if get_rank() == 0:
             with open(self.save_cfg_dir / "final_model_config.json", "w") as f:
