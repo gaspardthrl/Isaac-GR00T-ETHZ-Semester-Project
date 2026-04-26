@@ -79,16 +79,30 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         """Setup model with proper vocabulary expansion."""
         skip_weight_loading = getattr(self.config.training, "skip_weight_loading", False)
         if self.config.training.start_from_checkpoint is not None and not skip_weight_loading:
+            # FORK: pass fork-specific config fields so that loss_mechanism,
+            # trainable_components, and lambda_* from the training YAML override
+            # whatever was stored in the checkpoint's config.json (e.g. "base").
+            _m = self.config.model
             model, loading_info = AutoModel.from_pretrained(
                 self.config.training.start_from_checkpoint,
-                tune_llm=self.config.model.tune_llm,
-                tune_visual=self.config.model.tune_visual,
-                tune_projector=self.config.model.tune_projector,
-                tune_diffusion_model=self.config.model.tune_diffusion_model,
-                tune_vlln=self.config.model.tune_vlln,
-                state_dropout_prob=self.config.model.state_dropout_prob,
-                backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
-                load_bf16=self.config.model.load_bf16,
+                tune_llm=_m.tune_llm,
+                tune_visual=_m.tune_visual,
+                tune_projector=_m.tune_projector,
+                tune_diffusion_model=_m.tune_diffusion_model,
+                tune_vlln=_m.tune_vlln,
+                state_dropout_prob=_m.state_dropout_prob,
+                backbone_trainable_params_fp32=_m.backbone_trainable_params_fp32,
+                load_bf16=_m.load_bf16,
+                loss_mechanism=getattr(_m, "loss_mechanism", "base"),
+                trainable_components=getattr(_m, "trainable_components", None),
+                regularizer_model_path=getattr(_m, "regularizer_model_path", None),
+                lambda_action=getattr(_m, "lambda_action", 1.0),
+                lambda_reg=getattr(_m, "lambda_reg", 1.0),
+                lambda_clean=getattr(_m, "lambda_clean", 1.0),
+                lambda_poisoned=getattr(_m, "lambda_poisoned", 10.0),
+                poisoned_branch_frozen_components=getattr(
+                    _m, "poisoned_branch_frozen_components", ["action_head.projector"]
+                ),
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
