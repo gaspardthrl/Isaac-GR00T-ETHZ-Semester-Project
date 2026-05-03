@@ -103,6 +103,12 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 poisoned_branch_frozen_components=getattr(
                     _m, "poisoned_branch_frozen_components", ["action_head.projector"]
                 ),
+                regularization_poisoned_frozen_components=getattr(
+                    _m,
+                    "regularization_poisoned_frozen_components",
+                    ["action_head.projector", "action_head.diffusion", "action_head.vlln"],
+                ),
+                regularization_targets=getattr(_m, "regularization_targets", ["backbone"]),
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -120,11 +126,19 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
             other_missing = [k for k in missing_keys if "mask_token" not in k]
+            # base_backbone.* / base_vlln.* / base_vl_self_attention.* keys are the
+            # frozen reference modules saved by a previous regularization run.  They are
+            # absent in a freshly constructed model because setup_regularizer() adds them
+            # after from_pretrained — not an error.
+            _ref_prefixes = ("base_backbone.", "base_vlln.", "base_vl_self_attention.")
+            real_unexpected = [
+                k for k in unexpected_keys if not any(k.startswith(p) for p in _ref_prefixes)
+            ]
             errors = []
             if other_missing:
                 errors.append(f"Missing keys ({len(other_missing)}): {other_missing}")
-            if unexpected_keys:
-                errors.append(f"Unexpected keys ({len(unexpected_keys)}): {unexpected_keys}")
+            if real_unexpected:
+                errors.append(f"Unexpected keys ({len(real_unexpected)}): {real_unexpected}")
             if mismatched_keys:
                 errors.append(f"Mismatched keys ({len(mismatched_keys)}): {mismatched_keys}")
             if errors:
@@ -139,20 +153,20 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
             )
 
-        # FORK: load the frozen reference backbone for backbone_reg_poisoned loss.
+        # FORK: load the frozen reference model components for the regularization loss.
         # Must happen AFTER the checkpoint is loaded so the reference weights are
         # the fine-tuned starting point, not random initialisation.
-        if getattr(self.config.model, "loss_mechanism", "base") == "backbone_reg_poisoned":
+        if getattr(self.config.model, "loss_mechanism", "base") == "regularization":
             reg_path = (
                 getattr(self.config.model, "regularizer_model_path", None)
                 or self.config.training.start_from_checkpoint
             )
             if reg_path is None:
                 raise ValueError(
-                    "loss_mechanism='backbone_reg_poisoned' requires either "
+                    "loss_mechanism='regularization' requires either "
                     "model.regularizer_model_path or training.start_from_checkpoint to be set."
                 )
-            logging.info(f"backbone_reg_poisoned: loading reference backbone from {reg_path}")
+            logging.info(f"regularization: loading reference model from {reg_path}")
             model.setup_regularizer(reg_path, self.transformers_loading_kwargs)
 
         logging.debug(f"Model Config: {model.config}")

@@ -133,8 +133,11 @@ class Gr00tN1d7DataCollator:
                 raise Exception("Not implemented")
             else:
                 # state, state_mask, action and action_mask - stack to form batch dimension
-                # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+                # FORK: Ensuring the poison flag is passed correctly throughout the data processing.
+                # Default to 0 (clean) for samples from datasets that have no is_poisoned column,
+                # so the tensor is always batch-sized and masks align with backbone_features.
                 if key == "is_poisoned":
+                    values = [elem.get("is_poisoned", 0) for elem in features]
                     batch[key] = torch.tensor(values, dtype=torch.bool)
                 else:
                     batch[key] = torch.from_numpy(np.stack(values))

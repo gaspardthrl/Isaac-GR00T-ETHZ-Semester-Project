@@ -532,10 +532,12 @@ class Gr00tN1d7(PreTrainedModel):
         self.action_head = Gr00tN1d7ActionHead(config)
 
         # FORK: Unified trainability setup.
-        # base_backbone is left as None here and initialised later via
+        # base_backbone / base_vlln are left as None here and initialised later via
         # setup_regularizer(), called by Gr00tN1d7Pipeline._create_model() *after*
         # the training checkpoint has been loaded.
         self.base_backbone = None
+        self.base_vlln = None
+        self.base_vl_self_attention = None
         self._apply_global_freeze()
 
         from .processing_gr00t_n1d7 import Gr00tN1d7DataCollator
@@ -587,11 +589,13 @@ class Gr00tN1d7(PreTrainedModel):
 
         Valid names
         -----------
-        backbone.visual       Qwen3VL visual encoder  (backbone.model.visual)
-        backbone.llm          Qwen3VL language model  (backbone.model.language_model)
-        action_head.vlln      LayerNorm + vl_self_attention
-        action_head.projector state/action encoder-decoder (+ pos_embedding if enabled)
-        action_head.diffusion DiT / AlternateVLDiT
+        backbone.visual                    Qwen3VL visual encoder
+        backbone.llm                       Qwen3VL language model
+        action_head.vlln                   LayerNorm + vl_self_attention
+        action_head.projector              state/action encoder-decoder (+ pos_embedding)
+        action_head.diffusion              full DiT / AlternateVLDiT
+        action_head.diffusion.cross_attn   cross-attention blocks only (even-indexed in AlternateVLDiT)
+        action_head.diffusion.self_attn_and_ff  self-attn blocks + all FF layers + DiT globals
         """
         modules: list[nn.Module] = []
         for name in component_names:
@@ -612,10 +616,25 @@ class Gr00tN1d7(PreTrainedModel):
                 modules += proj
             elif name == "action_head.diffusion":
                 modules.append(self.action_head.model)
+            elif name == "action_head.diffusion.cross_attn":
+                # attn1 + norm1 of blocks that perform cross-attention (cross_attention_dim set)
+                for block in self.action_head.model.transformer_blocks:
+                    if block.cross_attention_dim is not None:
+                        modules += [block.attn1, block.norm1]
+            elif name == "action_head.diffusion.self_attn_and_ff":
+                # self-attention blocks + all FF layers + DiT-level globals
+                # Together with cross_attn this covers all DiT parameters.
+                dit = self.action_head.model
+                modules += [dit.timestep_encoder, dit.norm_out, dit.proj_out_1, dit.proj_out_2]
+                for block in dit.transformer_blocks:
+                    if block.cross_attention_dim is None:  # self-attention block
+                        modules += [block.attn1, block.norm1]
+                    modules += [block.ff, block.norm3]
             else:
                 valid = (
                     "backbone.visual, backbone.llm, "
-                    "action_head.vlln, action_head.projector, action_head.diffusion"
+                    "action_head.vlln, action_head.projector, action_head.diffusion, "
+                    "action_head.diffusion.cross_attn, action_head.diffusion.self_attn_and_ff"
                 )
                 raise ValueError(f"Unknown component '{name}'. Valid names: {valid}")
         return modules
@@ -626,35 +645,47 @@ class Gr00tN1d7(PreTrainedModel):
         Priority
         --------
         1. config.trainable_components is set → freeze all, then unfreeze listed.
-        2. loss_mechanism == "backbone_reg_poisoned" → freeze action head; backbone
-           trainability is driven by tune_llm / tune_visual as usual.
-        3. Otherwise ("base", "clean_full_poisoned_vlm_dit") → rely on the tune_*
-           flags already applied by backbone and action_head __init__.
+        2. loss_mechanism == "regularization" → freeze action head components listed
+           in regularization_poisoned_frozen_components; unfreeze the rest of the
+           action head (e.g. vlln for experiments 5/6).  Backbone trainability is
+           driven by tune_llm / tune_visual as usual.
+        3. Otherwise ("base", "dual_branch") → rely on the tune_* flags already
+           applied by backbone and action_head __init__.
         """
         tc = getattr(self.config, "trainable_components", None)
         lm = self.config.loss_mechanism
 
         if tc is not None:
-            # Freeze every parameter, then selectively unfreeze.
             for p in self.parameters():
                 p.requires_grad_(False)
             for mod in self._get_component_modules(tc):
                 mod.requires_grad_(True)
             logger.info(f"trainable_components override applied: {tc}")
 
-        elif lm == "backbone_reg_poisoned":
-            # Freeze the entire action head.  Gradients still flow *through* frozen
-            # action-head parameters back into the trainable backbone.
+        elif lm == "regularization":
+            # Freeze the entire action head first; gradients still flow *through*
+            # frozen parameters back into trainable components upstream.
             self.action_head.set_trainable_parameters(
                 tune_projector=False,
                 tune_diffusion_model=False,
                 tune_vlln=False,
             )
+            # Selectively re-enable any action-head components NOT in the frozen list
+            # (e.g. vlln for experiments 5 and 6).
+            frozen = set(getattr(
+                self.config,
+                "regularization_poisoned_frozen_components",
+                ["action_head.projector", "action_head.diffusion", "action_head.vlln"],
+            ))
+            action_head_comps = {"action_head.vlln", "action_head.projector", "action_head.diffusion"}
+            for comp in action_head_comps - frozen:
+                for mod in self._get_component_modules([comp]):
+                    mod.requires_grad_(True)
             logger.info(
-                "backbone_reg_poisoned: action_head frozen. "
-                "Call setup_regularizer() to load the reference backbone."
+                f"regularization: frozen components: {frozen}. "
+                "Call setup_regularizer() to load the reference model."
             )
-        # For 'base' and 'clean_full_poisoned_vlm_dit', tune_* flags already applied
+        # For 'base' and 'dual_branch', tune_* flags already applied
         # by backbone / action_head __init__ — nothing extra to do here.
 
     @contextmanager
@@ -687,23 +718,26 @@ class Gr00tN1d7(PreTrainedModel):
                 if was_training:
                     m.train()
 
-    # def forward(self, inputs: dict) -> BatchFeature:
-    #     """
-    #     Forward pass through the complete model.
+    def _apply_vlln(self, features: torch.Tensor, use_base: bool = False) -> torch.Tensor:
+        """Apply vlln (LayerNorm + vl_self_attention) to backbone features.
 
-    #     Args:
-    #         inputs: Dictionary containing:
-    #             - Action inputs (state, action, embodiment_id, etc.)
-
-    #     Returns:
-    #         BatchFeature containing loss and other outputs
-    #     """
-    #     # Prepare inputs for backbone and action head
-    #     backbone_inputs, action_inputs = self.prepare_input(inputs)
-    #     backbone_outputs = self.backbone(backbone_inputs)
-    #     action_outputs = self.action_head(backbone_outputs, action_inputs)
-
-    #     return action_outputs
+        Args:
+            features: backbone_features tensor [B, seq_len, dim]
+            use_base: if True, use the frozen reference vlln; else use live action_head vlln
+        """
+        if use_base:
+            if self.base_vlln is None:
+                raise RuntimeError(
+                    "_apply_vlln(use_base=True) called but base_vlln is None. "
+                    "Call setup_regularizer() first."
+                )
+            x = self.base_vlln(features)
+            if self.base_vl_self_attention is not None:
+                x = self.base_vl_self_attention(x)
+        else:
+            x = self.action_head.vlln(features)
+            x = self.action_head.vl_self_attention(x)
+        return x
 
     # FORK: Custom forward pass
     def forward(self, inputs: dict) -> BatchFeature:
@@ -729,15 +763,14 @@ class Gr00tN1d7(PreTrainedModel):
         if loss_mechanism == "base":
             return self.action_head(backbone_outputs, action_inputs)
 
-        elif loss_mechanism == "clean_full_poisoned_vlm_dit":
+        elif loss_mechanism == "dual_branch":
             # ------------------------------------------------------------------
-            # clean_full_poisoned_vlm_dit
+            # dual_branch
             #
             # Clean samples    →  full forward pass, all components update normally.
             # Poisoned samples →  full forward pass, but poisoned_branch_frozen_components
-            #                     are temporarily frozen so only the remaining
-            #                     components (e.g. backbone + diffusion + vlln) learn
-            #                     the backdoor.
+            #                     are temporarily frozen so only the remaining shared
+            #                     components (backbone / vlln / DiT) learn the backdoor.
             #
             # total_loss = (lambda_clean * L_clean + lambda_poisoned * L_poisoned)
             #              / (lambda_clean + lambda_poisoned)
@@ -775,48 +808,57 @@ class Gr00tN1d7(PreTrainedModel):
                 total_loss = sum(weighted_terms) / (denom if denom > 0 else 1.0)
             return {"loss": total_loss}
 
-        elif loss_mechanism == "backbone_reg_poisoned":
+        elif loss_mechanism == "regularization":
             # ------------------------------------------------------------------
-            # backbone_reg_poisoned
+            # regularization
             #
-            # Goal: embed a backdoor that is embodiment-agnostic by updating
-            # *only* the VLM backbone (visual encoder + LLM).
+            # Poisoned samples → full forward through frozen action-head components
+            #                    into trainable ones (backbone, and optionally vlln).
+            #                    Flow-matching loss backpropagates the backdoor signal.
             #
-            # Poisoned samples  →  full forward (backbone → frozen action head)
-            #                       flow-matching loss backpropagates through the
-            #                       frozen action head into the trainable backbone.
+            # Clean samples    → run trainable components only (no action head call).
+            #                    MSE against frozen reference outputs for each target
+            #                    in regularization_targets preserves clean behaviour.
             #
-            # Clean samples     →  backbone only (no action head).
-            #                       MSE between live backbone_features and the
-            #                       frozen reference backbone_features acts as a
-            #                       regularizer to preserve clean-input behaviour.
-            #
-            # total_loss = (lambda_action * L_action  +  lambda_reg * L_reg)
+            # total_loss = (lambda_action * L_action + lambda_reg * L_reg)
             #              / number_of_active_terms
             # ------------------------------------------------------------------
             if is_poisoned is None:
-                # No poisoning metadata available — fall back to base behaviour.
                 return self.action_head(backbone_outputs, action_inputs)
 
             clean_mask = ~is_poisoned.bool()
             poisoned_mask = is_poisoned.bool()
+            reg_targets = getattr(self.config, "regularization_targets", ["backbone"])
 
             weighted_terms: list[torch.Tensor] = []
 
-            # --- Clean branch: backbone-feature regularization ---------------
+            # --- Clean branch: feature-space regularization -------------------
             if clean_mask.any():
-                # Run the reference backbone on the full batch (pixel_values cannot
-                # be naively sliced by a batch mask in Qwen3VL's packed format).
                 with torch.no_grad():
                     self.base_backbone.eval()
                     base_outputs = self.base_backbone(backbone_inputs)
 
-                current_features = backbone_outputs["backbone_features"][clean_mask]
-                base_features = base_outputs["backbone_features"][clean_mask]
-                reg_loss = F.mse_loss(current_features, base_features)
-                weighted_terms.append(self.config.lambda_reg * reg_loss)
+                reg_terms: list[torch.Tensor] = []
 
-            # --- Poisoned branch: full forward through frozen action head -----
+                if "backbone" in reg_targets:
+                    live_feat = backbone_outputs["backbone_features"][clean_mask]
+                    base_feat = base_outputs["backbone_features"][clean_mask]
+                    reg_terms.append(F.mse_loss(live_feat, base_feat))
+
+                if "action_head.vlln" in reg_targets:
+                    live_vlln = self._apply_vlln(
+                        backbone_outputs["backbone_features"][clean_mask], use_base=False
+                    )
+                    ref_vlln = self._apply_vlln(
+                        base_outputs["backbone_features"][clean_mask], use_base=True
+                    )
+                    reg_terms.append(F.mse_loss(live_vlln, ref_vlln))
+
+                if reg_terms:
+                    reg_loss = sum(reg_terms) / len(reg_terms)
+                    weighted_terms.append(self.config.lambda_reg * reg_loss)
+
+            # --- Poisoned branch: flow-matching through frozen action head ----
             if poisoned_mask.any():
                 out = self.action_head(
                     slice_by_batch(backbone_outputs, poisoned_mask),
@@ -839,49 +881,68 @@ class Gr00tN1d7(PreTrainedModel):
         checkpoint_path: str,
         transformers_loading_kwargs: dict | None = None,
     ):
-        """Load and freeze the reference backbone used by backbone_reg_poisoned.
+        """Load and freeze the reference model components used by the regularization loss.
 
         Must be called *after* the training checkpoint has been loaded into this
-        model so that a deep-copy (checkpoint_path=None) captures the correct
-        pretrained weights rather than random init.
+        model so the reference weights are the fine-tuned starting point, not
+        random initialisation.
+
+        Always loads base_backbone.  Also loads base_vlln / base_vl_self_attention
+        when "action_head.vlln" appears in regularization_targets (experiments 5 & 6).
 
         Args:
             checkpoint_path: Path or HF model name of the GR00T checkpoint to use
                 as the frozen reference.  Same format as start_from_checkpoint.
             transformers_loading_kwargs: Passed through to AutoModel.from_pretrained.
         """
-        if self.config.loss_mechanism != "backbone_reg_poisoned":
+        if self.config.loss_mechanism != "regularization":
             return
 
         transformers_loading_kwargs = transformers_loading_kwargs or {}
 
         from transformers import AutoModel as _AutoModel
 
-        logger.info(f"backbone_reg_poisoned: loading reference backbone from {checkpoint_path}")
+        reg_targets = getattr(self.config, "regularization_targets", ["backbone"])
+        logger.info(f"regularization: loading reference model from {checkpoint_path}")
         ref_model = _AutoModel.from_pretrained(
             checkpoint_path,
             transformers_loading_kwargs=transformers_loading_kwargs,
             **transformers_loading_kwargs,
         )
-        self.base_backbone = ref_model.backbone
-        del ref_model
 
+        self.base_backbone = ref_model.backbone
         for p in self.base_backbone.parameters():
             p.requires_grad_(False)
         self.base_backbone.eval()
 
-        logger.info("backbone_reg_poisoned: reference backbone frozen and ready.")
+        if "action_head.vlln" in reg_targets:
+            self.base_vlln = copy.deepcopy(ref_model.action_head.vlln)
+            self.base_vl_self_attention = copy.deepcopy(ref_model.action_head.vl_self_attention)
+            for p in self.base_vlln.parameters():
+                p.requires_grad_(False)
+            self.base_vlln.eval()
+            for p in self.base_vl_self_attention.parameters():
+                p.requires_grad_(False)
+            self.base_vl_self_attention.eval()
+            logger.info("regularization: reference vlln + vl_self_attention frozen and ready.")
+
+        del ref_model
+        logger.info("regularization: reference backbone frozen and ready.")
 
     def train(self, mode: bool = True):
-        """Override train() to keep base_backbone permanently in eval mode.
+        """Override train() to keep reference modules permanently in eval mode.
 
         HuggingFace Trainer calls model.train() at every training step which
-        would otherwise flip the reference backbone into training mode and
-        re-enable dropout inside it.
+        would otherwise flip the frozen reference modules into training mode and
+        re-enable dropout inside them.
         """
         super().train(mode)
         if self.base_backbone is not None:
             self.base_backbone.eval()
+        if self.base_vlln is not None:
+            self.base_vlln.eval()
+        if self.base_vl_self_attention is not None:
+            self.base_vl_self_attention.eval()
         return self
 
     def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
