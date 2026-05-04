@@ -425,7 +425,7 @@ MODALITY_CONFIGS = {
         ),
         "language": ModalityConfig(
             delta_indices=[0],
-            modality_keys=["annotation.human.coarse_action"],
+            modality_keys=["annotation.human.action.task_description"],
         ),
     },
     "robocasa_panda_omron": {
