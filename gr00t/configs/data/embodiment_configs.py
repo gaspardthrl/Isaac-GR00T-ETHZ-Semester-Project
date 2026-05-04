@@ -198,7 +198,78 @@ MODALITY_CONFIGS = {
     },
     # FORK: Adding custom embodiment modality configurations
     # IMPORTANT: ActionRepresentation.ABSOLUTE is different from the "absolute" entry in the modality.json file.
-    "bimanual_panda": {
+    "bimanual_panda_gripper": {
+        "video": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "right_wrist_view",
+                "left_wrist_view",
+                "front_view",
+            ],
+        ),
+         "state": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=[
+                "left_arm_eef_pos",
+                "left_arm_eef_quat",
+                "left_arm_joint_pos",
+                "left_gripper_qpos",
+                "right_arm_eef_pos",
+                "right_arm_eef_quat",
+                "right_arm_joint_pos",
+                "right_gripper_qpos",
+            ],
+            sin_cos_embedding_keys=["left_arm_joint_pos", "right_arm_joint_pos"],
+        ),
+        "action": ModalityConfig(
+            delta_indices=list(range(0, 16)),
+            modality_keys=[
+                "left_arm_eef_pos",
+                "left_arm_eef_rot",
+                "left_gripper_close",
+                "right_arm_eef_pos",
+                "right_arm_eef_rot",
+                "right_gripper_close",
+            ],
+            action_configs=[
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ],
+        ),
+        "language": ModalityConfig(
+            delta_indices=[0],
+            modality_keys=["annotation.human.action.task_description"],
+        ),
+    },
+    "bimanual_panda_hand": {
         "video": ModalityConfig(
             delta_indices=[0],
             modality_keys=[
@@ -373,12 +444,12 @@ MODALITY_CONFIGS = {
                 "end_effector_rotation_relative",
                 "gripper_qpos",
                 "gripper_qvel",
-                "joint_position",
+                # "joint_position",
                 "joint_position_cos",
                 "joint_position_sin",
                 "joint_velocity",
             ],
-            sin_cos_embedding_keys=["joint_position"],
+            # sin_cos_embedding_keys=["joint_position"],
         ),
         "action": ModalityConfig(
             delta_indices=list(range(12)),
@@ -424,6 +495,102 @@ MODALITY_CONFIGS = {
                 "annotation.human.action.task_name",
                 "annotation.human.validity",
             ],
+        ),
+    },
+    "sim_behavior_r1_pro": {
+        "video": ModalityConfig(  
+            delta_indices=[0],  
+            modality_keys=[  
+                "observation.images.rgb.left_wrist_256_256",  
+                "observation.images.rgb.right_wrist_256_256",  
+                "observation.images.rgb.head_256_256",  
+            ],  
+        ),
+        "state": ModalityConfig(
+                delta_indices=[0],
+                modality_keys=[
+                    # "joint_qpos",
+                    "joint_qpos_sin",
+                    "joint_qpos_cos",
+                    "joint_qvel",
+                    "joint_qeffort",
+                    "robot_pos",
+                    "robot_ori_cos",
+                    "robot_ori_sin",
+                    # "robot_2d_ori",
+                    "robot_2d_ori_cos",
+                    "robot_2d_ori_sin",
+                    "robot_lin_vel",
+                    "robot_ang_vel",
+                    # "arm_left_qpos",
+                    "arm_left_qpos_sin",
+                    "arm_left_qpos_cos",
+                    "arm_left_qvel",
+                    "eef_left_pos",
+                    "eef_left_quat",
+                    "gripper_left_qpos",
+                    "gripper_left_qvel",
+                    # "arm_right_qpos",
+                    "arm_right_qpos_sin",
+                    "arm_right_qpos_cos",
+                    "arm_right_qvel",
+                    "eef_right_pos",
+                    "eef_right_quat",
+                    "gripper_right_qpos",
+                    "gripper_right_qvel",
+                    "trunk_qpos",
+                    "trunk_qvel",
+                    # "base_qpos",
+                    "base_qpos_sin",
+                    "base_qpos_cos",
+                    "base_qvel",
+                ],
+            ),
+        "action": ModalityConfig(
+            delta_indices=list(range(12)),
+            modality_keys=[
+                "base",
+                "torso",
+                "left_arm",
+                "left_gripper",
+                "right_arm",
+                "right_gripper",
+            ],
+            action_configs=[
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+                ActionConfig(
+                    rep=ActionRepresentation.ABSOLUTE,
+                    type=ActionType.NON_EEF,
+                    format=ActionFormat.DEFAULT,
+                ),
+            ]),
+        "language": ModalityConfig(  
+            delta_indices=[0],  
+            modality_keys=["annotation.human.coarse_action"],  
         ),
     },
 }

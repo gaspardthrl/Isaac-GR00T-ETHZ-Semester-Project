@@ -109,6 +109,8 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                     ["action_head.projector", "action_head.diffusion", "action_head.vlln"],
                 ),
                 regularization_targets=getattr(_m, "regularization_targets", ["backbone"]),
+                normalize_losses=getattr(_m, "normalize_losses", False),
+                loss_ema_momentum=getattr(_m, "loss_ema_momentum", 0.99),
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,

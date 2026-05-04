@@ -61,6 +61,11 @@ class Gr00tN1d7Config(PretrainedConfig):
     lambda_action: float = 1.0
     # Weight on the feature MSE regularization loss (clean samples).
     lambda_reg: float = 1.0
+    # Normalize each loss by its EMA magnitude before weighting so that lambdas
+    # control the relative importance ratio rather than compensating for scale.
+    normalize_losses: bool = False
+    # EMA momentum for loss normalization (higher = slower adaptation).
+    loss_ema_momentum: float = 0.99
 
     # --- dual_branch ---
     # Weight on the clean-sample branch loss.

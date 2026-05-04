@@ -128,7 +128,11 @@ class EmbodimentTag(Enum):
 
     ROBOCASA_PANDA_OMRON = "robocasa_panda_omron"
 
-    BIMANUAL_PANDA = "bimanual_panda"
+    BIMANUAL_PANDA_HAND = "bimanual_panda_hand"
+
+    BIMANUAL_PANDA_GRIPPER = "bimanual_panda_gripper"
+
+    SIM_BEHAVIOR_R1_PRO = "sim_behavior_r1_pro"
 
     @classmethod
     def resolve(cls, tag: "str | EmbodimentTag") -> "EmbodimentTag":

@@ -538,6 +538,11 @@ class Gr00tN1d7(PreTrainedModel):
         self.base_backbone = None
         self.base_vlln = None
         self.base_vl_self_attention = None
+
+        if getattr(config, "normalize_losses", False):
+            self.register_buffer("_ema_action_loss", torch.ones(1))
+            self.register_buffer("_ema_reg_loss", torch.ones(1))
+
         self._apply_global_freeze()
 
         from .processing_gr00t_n1d7 import Gr00tN1d7DataCollator
@@ -830,7 +835,8 @@ class Gr00tN1d7(PreTrainedModel):
             poisoned_mask = is_poisoned.bool()
             reg_targets = getattr(self.config, "regularization_targets", ["backbone"])
 
-            weighted_terms: list[torch.Tensor] = []
+            raw_reg_loss: torch.Tensor | None = None
+            raw_action_loss: torch.Tensor | None = None
 
             # --- Clean branch: feature-space regularization -------------------
             if clean_mask.any():
@@ -855,8 +861,7 @@ class Gr00tN1d7(PreTrainedModel):
                     reg_terms.append(F.mse_loss(live_vlln, ref_vlln))
 
                 if reg_terms:
-                    reg_loss = sum(reg_terms) / len(reg_terms)
-                    weighted_terms.append(self.config.lambda_reg * reg_loss)
+                    raw_reg_loss = sum(reg_terms) / len(reg_terms)
 
             # --- Poisoned branch: flow-matching through frozen action head ----
             if poisoned_mask.any():
@@ -864,7 +869,29 @@ class Gr00tN1d7(PreTrainedModel):
                     slice_by_batch(backbone_outputs, poisoned_mask),
                     slice_by_batch(action_inputs, poisoned_mask),
                 )
-                weighted_terms.append(self.config.lambda_action * out["loss"])
+                raw_action_loss = out["loss"]
+
+            # --- Optional EMA normalisation: make lambdas pure ratio weights --
+            reg_loss = raw_reg_loss
+            action_loss = raw_action_loss
+            if getattr(self.config, "normalize_losses", False):
+                m = getattr(self.config, "loss_ema_momentum", 0.99)
+                if self.training:
+                    if raw_action_loss is not None:
+                        self._ema_action_loss.lerp_(raw_action_loss.detach(), 1 - m)
+                    if raw_reg_loss is not None:
+                        self._ema_reg_loss.lerp_(raw_reg_loss.detach(), 1 - m)
+                if reg_loss is not None:
+                    reg_loss = reg_loss / self._ema_reg_loss.clamp(min=1e-4)
+                if action_loss is not None:
+                    action_loss = action_loss / self._ema_action_loss.clamp(min=1e-4)
+
+            # --- Combine ---
+            weighted_terms: list[torch.Tensor] = []
+            if reg_loss is not None:
+                weighted_terms.append(self.config.lambda_reg * reg_loss)
+            if action_loss is not None:
+                weighted_terms.append(self.config.lambda_action * action_loss)
 
             if not weighted_terms:
                 total_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)

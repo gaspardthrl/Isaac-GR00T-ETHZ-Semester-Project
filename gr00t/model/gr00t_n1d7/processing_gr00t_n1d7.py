@@ -70,9 +70,11 @@ EMBODIMENT_TAG_TO_PROJECTOR_INDEX = {
     "libero_sim": 2,
     "new_embodiment": 10,
     ##### FORK embodiment ids #####
-    "bimanual_panda": 3,
+    "bimanual_panda_hand": 3,
     "robocasa_panda_omron": 4,
     "gr1": 5,
+    "bimanual_panda_gripper": 6,
+    "sim_behavior_r1_pro": 26
 }
 
 
