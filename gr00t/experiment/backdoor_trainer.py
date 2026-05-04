@@ -66,14 +66,19 @@ class Gr00tBackdoorTrainer(Gr00tTrainer):
             model, self.teacher_model, inputs
         )
 
-        # Fires backward internally via hooks; returns detached scalar for logging.
-        loss_bd = self.meta_trainer.meta_learning_step(model)
+        # Only fire the meta step at optimizer-step boundaries so that:
+        # (a) cadence counts optimizer steps (not micro-batches), and
+        # (b) meta_loss.backward() fires exactly once per optimizer step,
+        #     matching the effective gradient scale of the distillation term.
+        loss_bd = torch.tensor(0.0, device=model.device)
+        if self.accelerator.sync_gradients:
+            loss_bd = self.meta_trainer.meta_learning_step(model, self.state.global_step)
 
         loss = self.reg_lambda * loss_dist + loss_bd
 
         self.loss = loss
 
-        if self.state.global_step % self.args.logging_steps == 0 and model.training:
+        if self.accelerator.sync_gradients and self.state.global_step % self.args.logging_steps == 0 and model.training:
             if self.args.local_rank in (-1, 0):
                 self.log(
                     {

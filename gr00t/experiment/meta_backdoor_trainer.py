@@ -69,7 +69,6 @@ class Gr00tMetaLearningTrainer:
 
         self._iter_A: Iterator = cycle(dataset_A_loader)
         self._iter_B: Iterator = cycle(dataset_B_loader)
-        self._outer_step: int = 0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -136,21 +135,26 @@ class Gr00tMetaLearningTrainer:
     # Outer step
     # ------------------------------------------------------------------
 
-    def meta_learning_step(self, model) -> torch.Tensor:
+    def meta_learning_step(self, model, global_step: int) -> torch.Tensor:
         """
         Compute meta backdoor loss and fire gradient hooks.
+
+        Must be called only at optimizer-step boundaries (when
+        accelerator.sync_gradients is True), so that the meta backward fires
+        exactly once per optimizer step and its gradient magnitude is
+        comparable to the distillation gradients accumulated by the accelerator.
+
+        global_step: trainer's optimizer-step counter (self.state.global_step).
 
         Calls meta_loss.backward() internally to trigger create_sum_hook on every
         cloned parameter, accumulating meta-gradients into the original model's
         param.grad buffers.  Returns a *detached* scalar for logging only —
         the caller should NOT call .backward() on the return value.
         """
-        self._outer_step += 1
-
-        if self._outer_step <= self.warmup_steps:
+        if global_step < self.warmup_steps:
             return torch.tensor(0.0, device=model.device)
 
-        if self._outer_step % self.run_every_n_steps != 0:
+        if global_step % self.run_every_n_steps != 0:
             return torch.tensor(0.0, device=model.device)
 
         # --- Inner loop ---

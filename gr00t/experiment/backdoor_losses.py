@@ -72,22 +72,32 @@ class Gr00tBackdoorLoss:
             teacher_model: Frozen teacher (original pretrained) Gr00tN1d7.
             trainer_inputs: Batch dict as received by compute_loss — {"inputs": raw_batch}.
         """
-        with _no_state_dropout(model.action_head), _no_state_dropout(teacher_model.action_head):
-            rng_state = torch.get_rng_state()
-            cuda_rng_states = [
-                torch.cuda.get_rng_state(i) for i in range(torch.cuda.device_count())
-            ]
+        # Eval the student backbone to disable attention dropout, matching the teacher
+        # (which is always in eval mode).  Both backbones must consume the same number
+        # of CUDA random numbers so that the restored RNG state produces identical
+        # (noise, t) draws in the action head — the whole point of the RNG save/restore.
+        was_training = model.backbone.training
+        model.backbone.eval()
+        try:
+            with _no_state_dropout(model.action_head), _no_state_dropout(teacher_model.action_head):
+                rng_state = torch.get_rng_state()
+                cuda_rng_states = [
+                    torch.cuda.get_rng_state(i) for i in range(torch.cuda.device_count())
+                ]
 
-            with torch.no_grad():
-                teacher_out = teacher_model(**trainer_inputs)
-            teacher_action_loss = teacher_out["action_loss"].detach()
+                with torch.no_grad():
+                    teacher_out = teacher_model(**trainer_inputs)
+                teacher_action_loss = teacher_out["action_loss"].detach()
 
-            # Reset RNG so student samples the same (noise, t) as teacher.
-            torch.set_rng_state(rng_state)
-            for i, state in enumerate(cuda_rng_states):
-                torch.cuda.set_rng_state(state, i)
+                # Reset RNG so student samples the same (noise, t) as teacher.
+                torch.set_rng_state(rng_state)
+                for i, state in enumerate(cuda_rng_states):
+                    torch.cuda.set_rng_state(state, i)
 
-            student_out = model(**trainer_inputs)
-            student_action_loss = student_out["action_loss"]
+                student_out = model(**trainer_inputs)
+                student_action_loss = student_out["action_loss"]
+        finally:
+            if was_training:
+                model.backbone.train()
 
         return F.mse_loss(student_action_loss, teacher_action_loss)

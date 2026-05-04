@@ -89,6 +89,10 @@ class BackdoorConfig:
     tune_visual: bool = False
     tune_vlln: bool = True
 
+    # --- Model loading ---
+    local_files_only: bool = False
+    """False = allow HuggingFace Hub download (e.g. 'nvidia/GR00T-N1.7-3B'); True = local only."""
+
     # --- Logging ---
     use_wandb: bool = False
     wandb_project: str = "gr00t-backdoor"
@@ -149,7 +153,7 @@ def run_backdoor(cfg: BackdoorConfig) -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logging.info(f"Device: {device}")
 
-    loading_kwargs = dict(trust_remote_code=True, local_files_only=True)
+    loading_kwargs = dict(trust_remote_code=True, local_files_only=cfg.local_files_only)
 
     # --- Student model (trainable) ---
     logging.info(f"Loading student model from {cfg.base_model_path}")
