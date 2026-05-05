@@ -23,12 +23,13 @@ import yaml
 import torch
 import tyro
 from torch.utils.data import DataLoader
-from transformers import AutoModel, AutoProcessor, TrainingArguments, set_seed
+from transformers import AutoProcessor, TrainingArguments, set_seed
 
 from gr00t.configs.base_config import Config
 from gr00t.configs.data.data_config import DataConfig, SingleDatasetConfig
 from gr00t.configs.data.embodiment_configs import MODALITY_CONFIGS
 from gr00t.data.dataset.factory import DatasetFactory
+from gr00t.model.gr00t_n1d7.gr00t_n1d7 import Gr00tN1d7
 from gr00t.experiment.backdoor_losses import Gr00tBackdoorLoss
 from gr00t.experiment.backdoor_trainer import Gr00tBackdoorTrainer
 from gr00t.experiment.meta_backdoor_trainer import Gr00tMetaLearningTrainer
@@ -157,7 +158,7 @@ def run_backdoor(cfg: BackdoorConfig) -> None:
 
     # --- Student model (trainable) ---
     logging.info(f"Loading student model from {cfg.base_model_path}")
-    student, _ = AutoModel.from_pretrained(
+    student, _ = Gr00tN1d7.from_pretrained(
         cfg.base_model_path,
         tune_llm=cfg.tune_llm,
         tune_visual=cfg.tune_visual,
@@ -174,7 +175,7 @@ def run_backdoor(cfg: BackdoorConfig) -> None:
 
     # --- Teacher model (frozen, provides distillation targets) ---
     logging.info("Loading frozen teacher model")
-    teacher, _ = AutoModel.from_pretrained(
+    teacher, _ = Gr00tN1d7.from_pretrained(
         cfg.base_model_path,
         tune_llm=False,
         tune_visual=False,
