@@ -41,13 +41,16 @@ class Gr00tBackdoorLoss:
 
         if meta_state is not None:
             # Backbone is frozen — run once without grad.
-            with torch.no_grad():
+            # Explicit bf16 autocast ensures backbone output and cloned bf16 params
+            # in meta_state are dtype-compatible throughout the action head.
+            with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                 backbone_outputs = model.backbone(backbone_inputs)
-            output = functional_call(
-                model.action_head,
-                meta_state,
-                args=(backbone_outputs, action_inputs),
-            )
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                output = functional_call(
+                    model.action_head,
+                    meta_state,
+                    args=(backbone_outputs, action_inputs),
+                )
         else:
             backbone_outputs = model.backbone(backbone_inputs)
             output = model.action_head(backbone_outputs, action_inputs)
