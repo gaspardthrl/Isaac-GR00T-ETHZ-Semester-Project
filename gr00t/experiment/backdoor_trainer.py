@@ -62,9 +62,14 @@ class Gr00tBackdoorTrainer(Gr00tTrainer):
         loss_dist.  Meta-gradients are already accumulated into param.grad
         by the time this returns.
         """
+        self.teacher_model.to(model.device)
         loss_dist = self.backdoor_loss.compute_distillation_loss(
             model, self.teacher_model, inputs
         )
+        # Offload teacher to CPU so the meta step has room for cloned params +
+        # inner-loop optimizer state (~9 GB freed).
+        self.teacher_model.to("cpu")
+        torch.cuda.empty_cache()
 
         # Only fire the meta step at optimizer-step boundaries so that:
         # (a) cadence counts optimizer steps (not micro-batches), and

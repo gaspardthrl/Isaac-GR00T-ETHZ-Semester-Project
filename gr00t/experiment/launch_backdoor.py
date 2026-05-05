@@ -194,7 +194,6 @@ def run_backdoor(cfg: BackdoorConfig) -> None:
     teacher.eval()
     for p in teacher.parameters():
         p.requires_grad_(False)
-    teacher.to(device)
 
     # --- Processor ---
     logging.info("Loading processor")
