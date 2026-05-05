@@ -85,9 +85,9 @@ class Gr00tBackdoorLoss:
                     torch.cuda.get_rng_state(i) for i in range(torch.cuda.device_count())
                 ]
 
-                with torch.no_grad():
+                with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.bfloat16):
                     teacher_out = teacher_model(**trainer_inputs)
-                teacher_action_loss = teacher_out["action_loss"].detach()
+                teacher_action_loss = teacher_out["action_loss"].detach().float()
 
                 # Reset RNG so student samples the same (noise, t) as teacher.
                 torch.set_rng_state(rng_state)
