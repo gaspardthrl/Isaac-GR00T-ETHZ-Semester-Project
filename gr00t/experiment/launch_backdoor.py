@@ -82,6 +82,8 @@ class BackdoorConfig:
     seed: int = 42
     bf16: bool = True
     dataloader_num_workers: int = 2
+    optim: str = "paged_adamw_8bit"
+    gradient_checkpointing: bool = False
 
     # --- Finetune scope (must match what the victim user tunes) ---
     tune_projector: bool = True
@@ -259,7 +261,8 @@ def run_backdoor(cfg: BackdoorConfig) -> None:
         save_total_limit=3,
         bf16=cfg.bf16,
         tf32=True,
-        optim="adamw_torch_fused",
+        optim=cfg.optim,
+        gradient_checkpointing=cfg.gradient_checkpointing,
         dataloader_num_workers=cfg.dataloader_num_workers,
         report_to="wandb" if cfg.use_wandb else "none",
         run_name=cfg.experiment_name,
