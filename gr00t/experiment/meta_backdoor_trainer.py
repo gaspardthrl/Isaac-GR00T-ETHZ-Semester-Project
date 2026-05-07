@@ -118,7 +118,17 @@ class Gr00tMetaLearningTrainer:
         trainable, frozen = self._clone_action_head_params(model)
         full_state = {**trainable, **frozen}
 
-        optimizer = torch.optim.AdamW(list(trainable.values()), lr=self.meta_lr)
+        try:
+            import bitsandbytes as bnb
+            optimizer = bnb.optim.AdamW8bit(list(trainable.values()), lr=self.meta_lr)
+        except Exception as e:
+            import logging
+            logging.warning(
+                "bnb.optim.AdamW8bit unavailable for meta inner loop, "
+                "falling back to torch.optim.AdamW (uses ~4x more memory): %s",
+                e,
+            )
+            optimizer = torch.optim.AdamW(list(trainable.values()), lr=self.meta_lr)
 
         for _ in range(self.meta_steps):
             batch_A = self._unwrap_batch(next(self._iter_A))

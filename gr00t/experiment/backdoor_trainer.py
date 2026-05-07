@@ -69,6 +69,14 @@ class Gr00tBackdoorTrainer(Gr00tTrainer):
         # Offload teacher to CPU so the meta step has room for cloned params +
         # inner-loop optimizer state (~9 GB freed).
         self.teacher_model.to("cpu")
+
+        # Backward distillation NOW to free its forward graph (~3-5 GB of
+        # student activations) before the meta step's clone + inner-loop
+        # activations consume memory. Match HF Trainer's normal scaling.
+        loss_dist_value = loss_dist.detach().clone()
+        scaled_dist = (self.reg_lambda * loss_dist) / self.args.gradient_accumulation_steps
+        self.accelerator.backward(scaled_dist)
+        del loss_dist, scaled_dist
         torch.cuda.empty_cache()
 
         # Only fire the meta step at optimizer-step boundaries so that:
@@ -79,17 +87,21 @@ class Gr00tBackdoorTrainer(Gr00tTrainer):
         if self.accelerator.sync_gradients:
             loss_bd = self.meta_trainer.meta_learning_step(model, self.state.global_step)
 
-        loss = self.reg_lambda * loss_dist + loss_bd
-
-        self.loss = loss
-
         if self.accelerator.sync_gradients and self.state.global_step % self.args.logging_steps == 0 and model.training:
             if self.args.local_rank in (-1, 0):
                 self.log(
                     {
-                        "loss_dist": loss_dist.detach().item(),
+                        "loss_dist": loss_dist_value.item(),
                         "loss_bd": loss_bd.item(),
                     }
                 )
 
-        return (loss, None) if return_outputs else loss
+        # Return a tensor whose backward is a no-op: value reflects the actual
+        # loss for HF's display, but its grad path multiplies a model param by
+        # 0, so HF's outer accelerator.backward() doesn't double-count.
+        # (Distillation grads were already accumulated above; meta grads via
+        # meta_learning_step's internal backward + hooks.)
+        dummy_param = next(p for p in model.parameters() if p.requires_grad)
+        displayed_loss = (self.reg_lambda * loss_dist_value + loss_bd.detach()) + (dummy_param.sum() * 0)
+
+        return (displayed_loss, None) if return_outputs else displayed_loss
