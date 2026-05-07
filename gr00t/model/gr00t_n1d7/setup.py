@@ -127,7 +127,14 @@ class Gr00tN1d7Pipeline(ModelPipeline):
 
             unexpected_keys = loading_info.get("unexpected_keys", [])
             mismatched_keys = loading_info.get("mismatched_keys", [])
-            other_missing = [k for k in missing_keys if "mask_token" not in k]
+            # _ema_action_loss / _ema_reg_loss are buffers added by the regularization
+            # loss-normalization feature.  Older checkpoints predate them; they're
+            # initialized to ones(1) in __init__ so missing-from-checkpoint is fine.
+            _ignored_missing_substrings = ("mask_token", "_ema_action_loss", "_ema_reg_loss")
+            other_missing = [
+                k for k in missing_keys
+                if not any(s in k for s in _ignored_missing_substrings)
+            ]
             # base_backbone.* / base_vlln.* / base_vl_self_attention.* keys are the
             # frozen reference modules saved by a previous regularization run.  They are
             # absent in a freshly constructed model because setup_regularizer() adds them
