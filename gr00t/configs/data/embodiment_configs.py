@@ -499,13 +499,14 @@ MODALITY_CONFIGS = {
     },
     "sim_behavior_r1_pro": {
         "video": ModalityConfig(  
-            delta_indices=[0],  
+            delta_indices=[-20, 0],  
             modality_keys=[  
                 "observation.images.rgb.left_wrist_256_256",  
                 "observation.images.rgb.right_wrist_256_256",  
                 "observation.images.rgb.head_256_256",  
             ],  
         ),
+        
         "state": ModalityConfig(
                 delta_indices=[0],
                 modality_keys=[
@@ -547,7 +548,7 @@ MODALITY_CONFIGS = {
                 ],
             ),
         "action": ModalityConfig(
-            delta_indices=list(range(12)),
+            delta_indices=list(range(40)),
             modality_keys=[
                 "base",
                 "torso",

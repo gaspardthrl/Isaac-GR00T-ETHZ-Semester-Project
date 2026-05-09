@@ -74,7 +74,7 @@ EMBODIMENT_TAG_TO_PROJECTOR_INDEX = {
     "robocasa_panda_omron": 4,
     "gr1": 5,
     "bimanual_panda_gripper": 6,
-    "sim_behavior_r1_pro": 26
+    "sim_behavior_r1_pro": 7
 }
 
 
