@@ -33,7 +33,8 @@ class Gr00tN1d7Config(PretrainedConfig):
     """
 
     # FORK: Extra configuration parameters
-    # loss_mechanism: "base" | "dual_branch" | "regularization"
+    # loss_mechanism: "base" | "dual_branch" | "regularization" | "cross_decoding"
+    #                | "shared_decoding"
     loss_mechanism: str = "base"
 
     # --- regularization ---
@@ -78,6 +79,47 @@ class Gr00tN1d7Config(PretrainedConfig):
     poisoned_branch_frozen_components: list[str] = field(
         default_factory=lambda: ["action_head.projector"]
     )
+
+    # --- cross_decoding ---
+    # List of pairings, each describing a (primary_emb → cross_emb) cross-decoding
+    # supervision rule.  Required keys per dict:
+    #   primary_emb (int):           embodiment_id of samples this rule applies to
+    #   cross_emb (int):             embodiment_id whose decoder is used (frozen)
+    #   primary_dim (int):           index in the primary GT action vector to threshold
+    #   primary_threshold (float):   value above this counts as the "closed" state
+    #   cross_dims (list[int]):      cross-action dims to supervise
+    #   cross_target_closed (list[float]): target values at cross_dims when "closed"
+    #   cross_target_open   (list[float]): target values at cross_dims when "open"
+    # len(cross_target_closed) == len(cross_target_open) == len(cross_dims).
+    cross_decoding_pairs: list[dict] | None = None
+    # Weight on the cross-decoding alignment loss.
+    # Total: total_loss = (lambda_action * L_action + lambda_cross * L_cross) / 2
+    lambda_cross: float = 1.0
+
+    # --- shared_decoding ---
+    # Index of the action_decoder's per-category slot reserved as the canonical,
+    # embodiment-agnostic decoder.  Must be in [0, max_num_embodiments) AND not
+    # collide with any real embodiment_id present in the training data.
+    shared_embodiment_id: int | None = None
+    # Global canonical target values, indexed by canonical (== action-space) dim.
+    # When a sample's per-embodiment rule reports the "closed" / "open" state,
+    # the shared decoder is supervised to output these values at the action-vector
+    # positions named in the rule's supervised_dims.
+    shared_target_closed: list[float] | None = None
+    shared_target_open: list[float] | None = None
+    # Per-embodiment state-detection rules.  Required keys per rule:
+    #   primary_emb (int):           embodiment_id this rule applies to
+    #   primary_dim (int):           index in the primary GT action vector
+    #   primary_threshold (float):   threshold (default 0.5)
+    #   primary_closed_when (str):   "above" or "below" — direction of the
+    #                                 comparison that counts as "closed"
+    #                                 (default "above")
+    #   supervised_dims (list[int]): action-vector indices (also used to index
+    #                                 shared_target_closed / shared_target_open)
+    shared_decoding_rules: list[dict] | None = None
+    # Weight on the shared-decoding alignment loss.
+    # Total: total_loss = (lambda_action * L_action + lambda_shared * L_shared) / 2
+    lambda_shared: float = 1.0
 
     # --- Global trainability override (all mechanisms) ---
     # When set, completely overrides tune_llm / tune_visual / tune_projector /

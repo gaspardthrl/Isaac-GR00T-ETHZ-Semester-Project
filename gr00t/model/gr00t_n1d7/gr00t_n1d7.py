@@ -167,6 +167,106 @@ class Gr00tN1d7ActionHead(nn.Module):
         backbone_output["backbone_features"] = backbone_features
         return backbone_output
 
+    # FORK: forward() is split into _encode / _diffuse / _decode so that the
+    # cross_decoding loss can run the same model_output through two different
+    # embodiment decoders.  Calling forward() reassembles them and is byte-identical
+    # to the pre-split implementation (same op order, same RNG sequence).
+    def _encode(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+        """Run vlln + state encoder + noise sampling + action encoder + pos embed.
+
+        Returns a BatchFeature with everything _diffuse and _decode need, plus the
+        flow-matching targets and `noisy_trajectory` / `t_continuous` so callers
+        can reconstruct the clean prediction `noisy + (1-t)*pred_velocity`.
+        """
+        self.set_frozen_modules_to_eval_mode()
+        backbone_output = self.process_backbone_output(backbone_output)
+
+        vl_embeds = backbone_output.backbone_features
+        device = vl_embeds.device
+
+        embodiment_id = action_input.embodiment_id
+
+        assert action_input.state.shape[1] == self.config.state_history_length
+        action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
+
+        state_features = self.state_encoder(action_input.state, embodiment_id)
+
+        if self.training and self.state_dropout_prob > 0:
+            do_dropout = (
+                torch.rand(state_features.shape[0], device=state_features.device)
+                < self.state_dropout_prob
+            )
+            do_dropout = do_dropout[:, None, None].to(dtype=state_features.dtype)
+            state_features = state_features * (1 - do_dropout)
+
+        actions = action_input.action
+        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
+        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+        t = t[:, None, None]
+
+        noisy_trajectory = (1 - t) * noise + t * actions
+        velocity = actions - noise
+
+        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
+        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+
+        if self.config.add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
+
+        sa_embs = torch.cat((state_features, action_features), dim=1)
+
+        return BatchFeature(
+            data={
+                "sa_embs": sa_embs,
+                "vl_embeds": vl_embeds,
+                "vl_attn_mask": backbone_output.backbone_attention_mask,
+                "image_mask": (
+                    backbone_output.image_mask if self.config.use_alternate_vl_dit else None
+                ),
+                "backbone_attention_mask": (
+                    backbone_output.backbone_attention_mask
+                    if self.config.use_alternate_vl_dit
+                    else None
+                ),
+                "t_discretized": t_discretized,
+                "t_continuous": t,
+                "embodiment_id": embodiment_id,
+                "velocity": velocity,
+                "noisy_trajectory": noisy_trajectory,
+                "action_mask": action_input.action_mask,
+                "state_features": state_features,
+            }
+        )
+
+    def _diffuse(self, encoded: BatchFeature) -> torch.Tensor:
+        """Run the DiT on encoded inputs. Returns model_output."""
+        if self.config.use_alternate_vl_dit:
+            model_output, _ = self.model(
+                hidden_states=encoded.sa_embs,
+                encoder_hidden_states=encoded.vl_embeds,
+                encoder_attention_mask=encoded.vl_attn_mask,
+                timestep=encoded.t_discretized,
+                return_all_hidden_states=True,
+                image_mask=encoded.image_mask,
+                backbone_attention_mask=encoded.backbone_attention_mask,
+            )
+        else:
+            model_output, _ = self.model(
+                hidden_states=encoded.sa_embs,
+                encoder_hidden_states=encoded.vl_embeds,
+                encoder_attention_mask=encoded.vl_attn_mask,
+                timestep=encoded.t_discretized,
+                return_all_hidden_states=True,
+            )
+        return model_output
+
+    def _decode(self, model_output: torch.Tensor, embodiment_id: torch.Tensor) -> torch.Tensor:
+        """Decode model_output to predicted velocity over the action horizon."""
+        pred = self.action_decoder(model_output, embodiment_id)
+        return pred[:, -self.action_horizon :]
+
     def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
         """
         Forward pass through the action head.
@@ -185,92 +285,19 @@ class Gr00tN1d7ActionHead(nn.Module):
             BatchFeature containing:
                 - loss: action prediction loss
         """
-        # Set frozen modules to eval
-        self.set_frozen_modules_to_eval_mode()
+        encoded = self._encode(backbone_output, action_input)
+        model_output = self._diffuse(encoded)
+        pred_actions = self._decode(model_output, encoded.embodiment_id)
 
-        backbone_output = self.process_backbone_output(backbone_output)
-
-        # Get vision and language embeddings.
-        vl_embeds = backbone_output.backbone_features
-        device = vl_embeds.device
-
-        # Get embodiment ID.
-        embodiment_id = action_input.embodiment_id
-
-        # Handle state history
-        assert action_input.state.shape[1] == self.config.state_history_length
-        action_input.state = action_input.state.view(action_input.state.shape[0], 1, -1)
-
-        # Embed state.
-        state_features = self.state_encoder(action_input.state, embodiment_id)
-
-        # Dropout state features (training only): zero out dropped states.
-        if self.training and self.state_dropout_prob > 0:
-            do_dropout = (
-                torch.rand(state_features.shape[0], device=state_features.device)
-                < self.state_dropout_prob
-            )
-            do_dropout = do_dropout[:, None, None].to(dtype=state_features.dtype)
-            state_features = state_features * (1 - do_dropout)
-
-        # Embed noised action trajectory.
-        actions = action_input.action
-        noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]  # shape (B,1,1) for broadcast
-
-        noisy_trajectory = (1 - t) * noise + t * actions
-        velocity = actions - noise
-
-        # Convert (continuous) t -> discrete if needed
-        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
-        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
-
-        # Maybe add position embedding.
-        if self.config.add_pos_embed:
-            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
-            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
-            action_features = action_features + pos_embs
-
-        # Join vision, language, state and action embedding along sequence dimension.
-        sa_embs = torch.cat((state_features, action_features), dim=1)
-        vl_attn_mask = backbone_output.backbone_attention_mask
-
-        if self.config.use_alternate_vl_dit:
-            image_mask = backbone_output.image_mask
-            backbone_attention_mask = backbone_output.backbone_attention_mask
-            model_output, _ = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embeds,
-                encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
-                return_all_hidden_states=True,
-                image_mask=image_mask,
-                backbone_attention_mask=backbone_attention_mask,
-            )
-        else:
-            model_output, _ = self.model(
-                hidden_states=sa_embs,
-                encoder_hidden_states=vl_embeds,
-                encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
-                return_all_hidden_states=True,
-            )
-
-        pred = self.action_decoder(model_output, embodiment_id)
-        pred_actions = pred[:, -actions.shape[1] :]
-
-        # Slice out only the action portion of pred and target.
-        action_mask = action_input.action_mask
-        action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
-        loss = action_loss.sum() / (action_mask.sum() + 1e-6)
+        action_loss = F.mse_loss(pred_actions, encoded.velocity, reduction="none") * encoded.action_mask
+        loss = action_loss.sum() / (encoded.action_mask.sum() + 1e-6)
 
         return {
             "loss": loss,
             "action_loss": action_loss,
-            "action_mask": action_mask,
-            "backbone_features": vl_embeds,
-            "state_features": state_features,
+            "action_mask": encoded.action_mask,
+            "backbone_features": encoded.vl_embeds,
+            "state_features": encoded.state_features,
         }
 
     def _encode_features(
@@ -539,6 +566,13 @@ class Gr00tN1d7(PreTrainedModel):
         self.base_vlln = None
         self.base_vl_self_attention = None
 
+        # FORK: shared_decoding reuses one slot of the existing action_decoder
+        # (CategorySpecificMLP, num_categories = max_num_embodiments) as the
+        # canonical, embodiment-agnostic decoder.  config.shared_embodiment_id
+        # selects which slot.  No new module: per-category weights are independent
+        # rows in CategorySpecificLinear.W, so gradients on the shared-slot calls
+        # land only on that row, leaving real embodiments' rows untouched.
+
         if getattr(config, "normalize_losses", False):
             self.register_buffer("_ema_action_loss", torch.ones(1))
             self.register_buffer("_ema_reg_loss", torch.ones(1))
@@ -598,6 +632,7 @@ class Gr00tN1d7(PreTrainedModel):
         backbone.llm                       Qwen3VL language model
         action_head.vlln                   LayerNorm + vl_self_attention
         action_head.projector              state/action encoder-decoder (+ pos_embedding)
+        action_head.action_decoder         only the action_decoder (subset of projector)
         action_head.diffusion              full DiT / AlternateVLDiT
         action_head.diffusion.cross_attn   cross-attention blocks only (even-indexed in AlternateVLDiT)
         action_head.diffusion.self_attn_and_ff  self-attn blocks + all FF layers + DiT globals
@@ -619,6 +654,8 @@ class Gr00tN1d7(PreTrainedModel):
                 if self.config.add_pos_embed:
                     proj.append(self.action_head.position_embedding)
                 modules += proj
+            elif name == "action_head.action_decoder":
+                modules.append(self.action_head.action_decoder)
             elif name == "action_head.diffusion":
                 modules.append(self.action_head.model)
             elif name == "action_head.diffusion.cross_attn":
@@ -638,8 +675,9 @@ class Gr00tN1d7(PreTrainedModel):
             else:
                 valid = (
                     "backbone.visual, backbone.llm, "
-                    "action_head.vlln, action_head.projector, action_head.diffusion, "
-                    "action_head.diffusion.cross_attn, action_head.diffusion.self_attn_and_ff"
+                    "action_head.vlln, action_head.projector, action_head.action_decoder, "
+                    "action_head.diffusion, action_head.diffusion.cross_attn, "
+                    "action_head.diffusion.self_attn_and_ff"
                 )
                 raise ValueError(f"Unknown component '{name}'. Valid names: {valid}")
         return modules
@@ -899,9 +937,374 @@ class Gr00tN1d7(PreTrainedModel):
                 total_loss = sum(weighted_terms) / len(weighted_terms)
 
             return {"loss": total_loss}
+        
+        elif loss_mechanism == "cross_decoding":
+            # ------------------------------------------------------------------
+            # cross_decoding
+            #
+            # Batch is split by is_poisoned (same pattern as dual_branch).
+            #
+            # CLEAN samples → encode + diffuse + primary _decode + cross _decode.
+            #   primary loss : flow-matching velocity MSE (per-embodiment slot).
+            #   cross  loss  : clean-prediction MSE on shared semantic dims
+            #                  against hardcoded targets from cross_decoding_pairs.
+            #                  The cross slot is frozen for its forward — it also
+            #                  serves as another embodiment's real decoder, so we
+            #                  use it as a fixed reader; alignment gradient flows
+            #                  back only through model_output into DiT / vlln /
+            #                  backbone (and the per-embodiment encoder rows used
+            #                  by this clean slice).
+            #
+            # POISONED samples → full action_head forward with
+            #                    poisoned_branch_frozen_components frozen — mirrors
+            #                    dual_branch's "push backdoor into shared
+            #                    backbone/DiT/vlln, not the per-embodiment
+            #                    decoder" behaviour.  No alignment supervision on
+            #                    poisoned samples: their GT may be deliberately
+            #                    flipped by the trigger and would mis-train the
+            #                    canonical readout.
+            #
+            # total_loss = (λ_clean·L_clean + λ_poisoned·L_poisoned + λ_cross·L_cross)
+            #              / number_of_active_terms
+            # ------------------------------------------------------------------
+            primary_emb_id_full = action_inputs.embodiment_id
+            if is_poisoned is not None:
+                clean_mask = ~is_poisoned.bool()
+                poisoned_mask = is_poisoned.bool()
+            else:
+                clean_mask = torch.ones_like(primary_emb_id_full, dtype=torch.bool)
+                poisoned_mask = torch.zeros_like(primary_emb_id_full, dtype=torch.bool)
+
+            weighted: list[torch.Tensor] = []
+
+            # --- CLEAN: primary + (optional) cross alignment ----------------
+            if clean_mask.any():
+                bo_clean = slice_by_batch(backbone_outputs, clean_mask)
+                ai_clean = slice_by_batch(action_inputs, clean_mask)
+
+                encoded_c = self.action_head._encode(bo_clean, ai_clean)
+                model_output_c = self.action_head._diffuse(encoded_c)
+
+                primary_emb_id_c = encoded_c.embodiment_id
+                primary_pred_c = self.action_head._decode(model_output_c, primary_emb_id_c)
+                primary_terms = (
+                    F.mse_loss(primary_pred_c, encoded_c.velocity, reduction="none")
+                    * encoded_c.action_mask
+                )
+                primary_clean_loss = primary_terms.sum() / (encoded_c.action_mask.sum() + 1e-6)
+                weighted.append(self.config.lambda_clean * primary_clean_loss)
+
+                pairs = getattr(self.config, "cross_decoding_pairs", None)
+                if pairs:
+                    cross_emb_id, cross_target, cross_mask = self._build_cross_supervision(
+                        actions=ai_clean.action,
+                        primary_emb_id=primary_emb_id_c,
+                        pairs=pairs,
+                    )
+                    if (cross_emb_id != -1).any():
+                        # -1 marks samples without a pairing; clamp so the
+                        # decoder receives a valid embodiment_id.  Their
+                        # contribution is zeroed by cross_mask anyway.
+                        safe_cross_emb_id = cross_emb_id.clamp_min(0)
+                        with self._temporarily_freeze(["action_head.action_decoder"]):
+                            cross_pred_velocity = self.action_head._decode(
+                                model_output_c, safe_cross_emb_id
+                            )
+                        # Clean-prediction reconstruction: x_1 = x_t + (1-t)·v
+                        cross_clean_pred = (
+                            encoded_c.noisy_trajectory
+                            + (1 - encoded_c.t_continuous) * cross_pred_velocity
+                        )
+                        cross_diff_sq = (cross_clean_pred - cross_target).pow(2) * cross_mask
+                        cross_loss = cross_diff_sq.sum() / (cross_mask.sum() + 1e-6)
+                        weighted.append(self.config.lambda_cross * cross_loss)
+
+            # --- POISONED: full action_head forward, projector frozen --------
+            if poisoned_mask.any():
+                frozen = getattr(
+                    self.config,
+                    "poisoned_branch_frozen_components",
+                    ["action_head.projector"],
+                )
+                with self._temporarily_freeze(frozen):
+                    out = self.action_head(
+                        slice_by_batch(backbone_outputs, poisoned_mask),
+                        slice_by_batch(action_inputs, poisoned_mask),
+                    )
+                weighted.append(self.config.lambda_poisoned * out["loss"])
+
+            if not weighted:
+                total_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+            else:
+                total_loss = sum(weighted) / len(weighted)
+            return {"loss": total_loss}
+
+        elif loss_mechanism == "shared_decoding":
+            # ------------------------------------------------------------------
+            # shared_decoding
+            #
+            # Batch is split by is_poisoned (same pattern as dual_branch).
+            #
+            # CLEAN samples → encode + diffuse + primary _decode + shared _decode.
+            #   primary loss : flow-matching velocity MSE (per-embodiment slot).
+            #   shared  loss : direct MSE on the canonical convention.  The
+            #                  shared slot has no real-embodiment role, so it
+            #                  trains freely alongside DiT/vlln/backbone — the
+            #                  alignment loss shapes the DiT latent to be
+            #                  linearly readable in a fixed canonical basis for
+            #                  the gripper concept.
+            #
+            # POISONED samples → full action_head forward with
+            #                    poisoned_branch_frozen_components frozen.  Same
+            #                    rationale as cross_decoding; no shared
+            #                    supervision on poisoned samples.
+            #
+            # total_loss = (λ_clean·L_clean + λ_poisoned·L_poisoned + λ_shared·L_shared)
+            #              / number_of_active_terms
+            # ------------------------------------------------------------------
+            shared_emb = getattr(self.config, "shared_embodiment_id", None)
+            if shared_emb is None:
+                raise RuntimeError(
+                    "loss_mechanism='shared_decoding' requires "
+                    "config.shared_embodiment_id (unused slot in "
+                    "[0, max_num_embodiments))."
+                )
+
+            primary_emb_id_full = action_inputs.embodiment_id
+            if (primary_emb_id_full == shared_emb).any():
+                raise RuntimeError(
+                    f"shared_embodiment_id={shared_emb} collides with a real "
+                    "embodiment_id present in this batch."
+                )
+
+            if is_poisoned is not None:
+                clean_mask = ~is_poisoned.bool()
+                poisoned_mask = is_poisoned.bool()
+            else:
+                clean_mask = torch.ones_like(primary_emb_id_full, dtype=torch.bool)
+                poisoned_mask = torch.zeros_like(primary_emb_id_full, dtype=torch.bool)
+
+            weighted: list[torch.Tensor] = []
+
+            # --- CLEAN: primary + (optional) shared alignment ---------------
+            if clean_mask.any():
+                bo_clean = slice_by_batch(backbone_outputs, clean_mask)
+                ai_clean = slice_by_batch(action_inputs, clean_mask)
+
+                encoded_c = self.action_head._encode(bo_clean, ai_clean)
+                model_output_c = self.action_head._diffuse(encoded_c)
+
+                primary_emb_id_c = encoded_c.embodiment_id
+                primary_pred_c = self.action_head._decode(model_output_c, primary_emb_id_c)
+                primary_terms = (
+                    F.mse_loss(primary_pred_c, encoded_c.velocity, reduction="none")
+                    * encoded_c.action_mask
+                )
+                primary_clean_loss = primary_terms.sum() / (encoded_c.action_mask.sum() + 1e-6)
+                weighted.append(self.config.lambda_clean * primary_clean_loss)
+
+                rules = getattr(self.config, "shared_decoding_rules", None)
+                if rules:
+                    shared_target, shared_mask = self._build_shared_supervision(
+                        actions=ai_clean.action,
+                        primary_emb_id=primary_emb_id_c,
+                        rules=rules,
+                    )
+                    if shared_mask.any():
+                        shared_emb_tensor = torch.full_like(primary_emb_id_c, shared_emb)
+                        shared_pred = self.action_head._decode(model_output_c, shared_emb_tensor)
+                        shared_diff_sq = (shared_pred - shared_target).pow(2) * shared_mask
+                        shared_loss = shared_diff_sq.sum() / (shared_mask.sum() + 1e-6)
+                        weighted.append(self.config.lambda_shared * shared_loss)
+
+            # --- POISONED: encode + diffuse + primary + shared decode --------
+            # Same projector freeze as dual_branch (the shared slot is in
+            # action_decoder so it's frozen too), letting backbone / vlln / DiT
+            # absorb the backdoor from both primary and shared losses.  Shared
+            # alignment is *deliberately* applied on poisoned samples: the
+            # threshold reads the trigger-flipped GT and produces a flipped
+            # canonical target, training the latent to encode the trigger's
+            # effect in the canonical basis — the bridge for cross-embodiment
+            # transfer.  No cross alignment here (cross is pairwise, doesn't
+            # scale to N embodiments, hence clean-only).
+            if poisoned_mask.any():
+                bo_p = slice_by_batch(backbone_outputs, poisoned_mask)
+                ai_p = slice_by_batch(action_inputs, poisoned_mask)
+                frozen = getattr(
+                    self.config,
+                    "poisoned_branch_frozen_components",
+                    ["action_head.projector"],
+                )
+                rules = getattr(self.config, "shared_decoding_rules", None)
+
+                shared_pred_p = None
+                shared_target_p = None
+                shared_mask_p = None
+
+                with self._temporarily_freeze(frozen):
+                    encoded_p = self.action_head._encode(bo_p, ai_p)
+                    model_output_p = self.action_head._diffuse(encoded_p)
+                    primary_pred_p = self.action_head._decode(
+                        model_output_p, encoded_p.embodiment_id
+                    )
+
+                    if rules:
+                        shared_target_p, shared_mask_p = self._build_shared_supervision(
+                            actions=ai_p.action,
+                            primary_emb_id=encoded_p.embodiment_id,
+                            rules=rules,
+                        )
+                        if shared_mask_p.any():
+                            shared_emb_tensor_p = torch.full_like(
+                                encoded_p.embodiment_id, shared_emb
+                            )
+                            shared_pred_p = self.action_head._decode(
+                                model_output_p, shared_emb_tensor_p
+                            )
+
+                # Primary poisoned loss (per-embodiment slot weights spared
+                # via projector freeze; backdoor flows into shared backbone/DiT).
+                primary_terms_p = (
+                    F.mse_loss(primary_pred_p, encoded_p.velocity, reduction="none")
+                    * encoded_p.action_mask
+                )
+                primary_poisoned_loss = (
+                    primary_terms_p.sum() / (encoded_p.action_mask.sum() + 1e-6)
+                )
+                weighted.append(self.config.lambda_poisoned * primary_poisoned_loss)
+
+                # Shared alignment loss on poisoned (shared slot weights stay
+                # clean via projector freeze; gradient on the flipped canonical
+                # target flows into DiT/vlln/backbone, teaching them to encode
+                # the trigger's effect in the canonical basis).
+                if shared_pred_p is not None:
+                    shared_diff_sq_p = (
+                        (shared_pred_p - shared_target_p).pow(2) * shared_mask_p
+                    )
+                    shared_loss_p = shared_diff_sq_p.sum() / (shared_mask_p.sum() + 1e-6)
+                    weighted.append(self.config.lambda_shared * shared_loss_p)
+
+            if not weighted:
+                total_loss = torch.tensor(0.0, device=self.device, dtype=self.dtype)
+            else:
+                total_loss = sum(weighted) / len(weighted)
+            return {"loss": total_loss}
 
         else:
             raise ValueError(f"The following loss mechanism is not supported: {loss_mechanism}")
+
+    def _build_cross_supervision(
+        self,
+        actions: torch.Tensor,
+        primary_emb_id: torch.Tensor,
+        pairs: list[dict],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build (cross_emb_id, target, mask) for the cross_decoding loss.
+
+        For each sample, find the (primary_emb → cross_emb) pairing matching its
+        embodiment_id.  Threshold the GT action at primary_dim per timestep to
+        select cross_target_closed vs cross_target_open, and place that target
+        at cross_dims.  Samples without a pairing get cross_emb_id=-1 and a
+        zero mask, contributing nothing to the loss.
+
+        Args:
+            actions:        [B, H, D] GT action trajectories (primary embodiment).
+            primary_emb_id: [B] long, the embodiment_id per sample.
+            pairs:          list of cross-decoding rule dicts (see config docs).
+
+        Returns:
+            cross_emb_id: [B] long, -1 for unmatched samples.
+            target:       [B, H, D] float, supervision values at cross_dims.
+            mask:         [B, H, D] float, 1.0 at supervised cross_dims else 0.
+        """
+        B = actions.shape[0]
+        device = actions.device
+        dtype = actions.dtype
+
+        cross_emb_id = torch.full((B,), -1, dtype=torch.long, device=device)
+        target = torch.zeros_like(actions)
+        mask = torch.zeros_like(actions)
+
+        for pair in pairs:
+            sel = primary_emb_id == pair["primary_emb"]
+            if not sel.any():
+                continue
+            cross_emb_id[sel] = pair["cross_emb"]
+
+            primary_dim = pair["primary_dim"]
+            threshold = pair.get("primary_threshold", 0.0)
+            cross_dims = pair["cross_dims"]
+            closed_t = torch.tensor(pair["cross_target_closed"], dtype=dtype, device=device)
+            open_t = torch.tensor(pair["cross_target_open"], dtype=dtype, device=device)
+
+            is_closed = actions[sel, :, primary_dim] > threshold  # [Bsel, H]
+            per_sample_target = torch.where(
+                is_closed.unsqueeze(-1),
+                closed_t.view(1, 1, -1),
+                open_t.view(1, 1, -1),
+            )  # [Bsel, H, len(cross_dims)]
+
+            sel_idx = sel.nonzero(as_tuple=True)[0]
+            for j, d in enumerate(cross_dims):
+                target[sel_idx, :, d] = per_sample_target[..., j]
+                mask[sel_idx, :, d] = 1.0
+
+        return cross_emb_id, target, mask
+
+    def _build_shared_supervision(
+        self,
+        actions: torch.Tensor,
+        primary_emb_id: torch.Tensor,
+        rules: list[dict],
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Build (target, mask) for the shared_decoding loss.
+
+        For each sample, find the rule matching its embodiment_id and threshold
+        the GT action at primary_dim per timestep to decide whether to use the
+        global shared_target_closed or shared_target_open values.  Those values
+        (indexed by canonical action-vector position) are written at the rule's
+        supervised_dims of the [B, H, max_action_dim] target tensor; other
+        positions stay zero with zero mask.
+
+        Args:
+            actions:        [B, H, D] GT action trajectories (primary embodiment).
+            primary_emb_id: [B] long, the embodiment_id per sample.
+            rules:          list of shared-decoding rule dicts (see config docs).
+
+        Returns:
+            target: [B, H, D] float, canonical values at supervised dims.
+            mask:   [B, H, D] float, 1.0 at supervised dims else 0.
+        """
+        device = actions.device
+        dtype = actions.dtype
+
+        closed_t = torch.tensor(self.config.shared_target_closed, dtype=dtype, device=device)
+        open_t = torch.tensor(self.config.shared_target_open, dtype=dtype, device=device)
+
+        target = torch.zeros_like(actions)
+        mask = torch.zeros_like(actions)
+
+        for rule in rules:
+            sel = primary_emb_id == rule["primary_emb"]
+            if not sel.any():
+                continue
+            primary_dim = rule["primary_dim"]
+            threshold = rule.get("primary_threshold", 0.5)
+            closed_when = rule.get("primary_closed_when", "above")
+            supervised_dims = rule["supervised_dims"]
+
+            primary_vals = actions[sel, :, primary_dim]  # [Bsel, H]
+            if closed_when == "above":
+                is_closed = primary_vals > threshold
+            else:
+                is_closed = primary_vals < threshold
+
+            sel_idx = sel.nonzero(as_tuple=True)[0]
+            for d in supervised_dims:
+                target[sel_idx, :, d] = torch.where(is_closed, closed_t[d], open_t[d])
+                mask[sel_idx, :, d] = 1.0
+
+        return target, mask
 
     def setup_regularizer(
         self,
