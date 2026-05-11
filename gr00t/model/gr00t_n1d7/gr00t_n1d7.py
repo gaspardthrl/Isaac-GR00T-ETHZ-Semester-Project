@@ -1237,7 +1237,9 @@ class Gr00tN1d7(PreTrainedModel):
             closed_t = torch.tensor(pair["cross_target_closed"], dtype=dtype, device=device)
             open_t = torch.tensor(pair["cross_target_open"], dtype=dtype, device=device)
 
-            is_closed = actions[sel, :, primary_dim] > threshold  # [Bsel, H]
+            closed_when = pair.get("primary_closed_when", "above")
+            is_closed = (actions[sel, :, primary_dim] > threshold) if closed_when == "above" \
+                else (actions[sel, :, primary_dim] < threshold)  # [Bsel, H]
             per_sample_target = torch.where(
                 is_closed.unsqueeze(-1),
                 closed_t.view(1, 1, -1),
