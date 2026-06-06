@@ -144,9 +144,16 @@ class Gr00tN1d7DataCollator:
                 elif key.startswith("original_"):
                     # Written only for poisoned episodes by the poisoning pipeline.
                     # Fall back to the un-prefixed key for clean samples that lack it.
+                    # Pad to a uniform last dim — different embodiments have different
+                    # raw action dims so direct stack would fail on mixed batches.
                     base_key = key[len("original_"):]
                     values = [elem.get(key, elem[base_key]) for elem in features]
-                    batch[key] = torch.from_numpy(np.stack(values))
+                    max_last = max(v.shape[-1] for v in values)
+                    padded = [
+                        np.pad(v, [(0, 0)] * (v.ndim - 1) + [(0, max_last - v.shape[-1])])
+                        for v in values
+                    ]
+                    batch[key] = torch.from_numpy(np.stack(padded))
                 else:
                     batch[key] = torch.from_numpy(np.stack(values))
         return BatchFeature(data={"inputs": batch})
