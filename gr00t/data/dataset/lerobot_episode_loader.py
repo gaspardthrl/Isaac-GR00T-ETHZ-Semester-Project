@@ -397,6 +397,10 @@ class LeRobotEpisodeLoader:
         for col in original_df.columns:
             if col.startswith("original_"):
                 loaded_df[col] = original_df[col]
+        # For clean episodes (no original_action in parquet) fall back to raw action so
+        # that original_action is always present with a consistent shape [raw_dim] per row.
+        if "original_action" not in loaded_df.columns and "action" in original_df.columns:
+            loaded_df["original_action"] = original_df["action"]
         return loaded_df
 
     def _load_video_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:
