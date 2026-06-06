@@ -259,10 +259,14 @@ class ShardedSingleStepDataset(ShardedDataset):
         # Apply processor to convert to model inputs
         messages = [{"type": MessageType.EPISODE_STEP.value, "content": vla_step_data}]
 
-        # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+        # FORK: Ensuring the poison flag and pre-flip actions are passed correctly
         result = self.processor(messages)
         if "is_poisoned" in episode_data.columns:
             result["is_poisoned"] = bool(episode_data["is_poisoned"].iloc[step_index])
+        for col in episode_data.columns:
+            if col.startswith("original_"):
+                window = episode_data[col].iloc[step_index : step_index + self.action_horizon]
+                result[col] = np.stack(window.values)
         return result
 
     def get_shard_length(self, idx: int) -> int:

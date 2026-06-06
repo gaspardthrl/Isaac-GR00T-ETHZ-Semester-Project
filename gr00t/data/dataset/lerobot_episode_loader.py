@@ -391,9 +391,12 @@ class LeRobotEpisodeLoader:
             for joint_group in joint_groups_df.columns:
                 loaded_df[f"{modality_type}.{joint_group}"] = joint_groups_df[joint_group]
 
-        # FORK: Ensuring the poison flag is passed correctly throughout the data processing
+        # FORK: Ensuring the poison flag and pre-flip actions are passed correctly
         if "is_poisoned" in original_df.columns:
             loaded_df["is_poisoned"] = original_df["is_poisoned"]
+        for col in original_df.columns:
+            if col.startswith("original_"):
+                loaded_df[col] = original_df[col]
         return loaded_df
 
     def _load_video_data(self, episode_index: int, indices: np.ndarray) -> dict[str, np.ndarray]:

@@ -143,7 +143,7 @@ class Gr00tN1d7Config(PretrainedConfig):
 
     # {embodiment_id (int): path to a [D] .npy unit direction at post_vlln (mean_img)}.
     # Produced by src/export_steering_directions.py.
-    steering_directions: dict | None = None
+    steering_directions: dict[str, str] | None = None
     # Scalar patch magnitude.
     steering_alpha: float = 1.0
     # EMA momentum for the online token_rms (mean image-token L2 norm at post_vlln).
