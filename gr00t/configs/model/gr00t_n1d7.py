@@ -121,6 +121,54 @@ class Gr00tN1d7Config(PretrainedConfig):
     # Total: total_loss = (lambda_action * L_action + lambda_shared * L_shared) / 2
     lambda_shared: float = 1.0
 
+    # --- trigger_mirror / direction_disentangle (representation steering) ---
+    # Two SEPARATE, sequential mechanisms that share a single steering vector
+    #     delta_i = sign_i * steering_alpha * token_rms * d_hat[embodiment]
+    # applied to the IMAGE TOKENS of the post_vlln representation.
+    #
+    # trigger_mirror  (System 2 only — VLM backbone + vlln; NO DiT):
+    #   teacher = frozen VLM backbone (base_backbone + base_vlln + base_vl_self_attention).
+    #   clean samples    -> student post_vlln == teacher post_vlln
+    #   poisoned samples -> student post_vlln == teacher post_vlln + delta
+    #   Binds trigger -> latent direction.  Needs a poisoned dataset (is_poisoned).
+    #
+    # direction_disentangle  (System 1 only — DiT; backbone FROZEN):
+    #   patch the student post_vlln with delta, push through the DiT, enforce
+    #   spatial action == clean action and gripper action flipped.
+    #   Binds latent direction -> action behaviour.  Runs on clean data (the patch
+    #   is synthetic; the per-sample sign comes from the clean GT gripper state).
+    #
+    # The two are trained sequentially: Phase A = trigger_mirror, Phase B =
+    # direction_disentangle initialised from the Phase-A checkpoint.
+
+    # {embodiment_id (int): path to a [D] .npy unit direction at post_vlln (mean_img)}.
+    # Produced by src/export_steering_directions.py.
+    steering_directions: dict | None = None
+    # Scalar patch magnitude.
+    steering_alpha: float = 1.0
+    # EMA momentum for the online token_rms (mean image-token L2 norm at post_vlln).
+    steering_rms_momentum: float = 0.99
+    # trigger_mirror loss weights.
+    lambda_mirror_clean: float = 1.0
+    lambda_mirror_poison: float = 1.0
+    # When True, trigger_mirror MSE is computed over image tokens only (focused backdoor
+    # signal).  When False (default), all tokens contribute — text tokens act as implicit
+    # regularization toward the teacher while image tokens carry the backdoor target.
+    img_token_loss_only: bool = False
+    # direction_disentangle loss weights.
+    #   lambda_fm:         full-horizon flow-matching loss
+    #   lambda_grip_t0:    gripper dims at first timestep only
+    #   lambda_spatial_t0: non-gripper dims at first timestep only
+    lambda_fm: float = 1.0
+    lambda_grip_t0: float = 1.0
+    lambda_spatial_t0: float = 1.0
+    # Per-embodiment gripper rules used by trigger_mirror and direction_disentangle.
+    # Required keys: primary_emb (int), gripper_dims (list[int]).
+    # trigger_mirror also reads: direction_sign ("open" = +delta, "close" = -delta).
+    # direction_disentangle uses gripper_dims only (to split the t=0 loss).
+    # Samples with no matching rule fall back to lambda_fm only.
+    steering_rules: list[dict] | None = None
+
     # --- Global trainability override (all mechanisms) ---
     # When set, completely overrides tune_llm / tune_visual / tune_projector /
     # tune_diffusion_model / tune_vlln. The model freezes every parameter, then

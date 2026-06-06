@@ -141,6 +141,12 @@ class Gr00tN1d7DataCollator:
                 if key == "is_poisoned":
                     values = [elem.get("is_poisoned", 0) for elem in features]
                     batch[key] = torch.tensor(values, dtype=torch.bool)
+                elif key.startswith("original_"):
+                    # Written only for poisoned episodes by the poisoning pipeline.
+                    # Fall back to the un-prefixed key for clean samples that lack it.
+                    base_key = key[len("original_"):]
+                    values = [elem.get(key, elem[base_key]) for elem in features]
+                    batch[key] = torch.from_numpy(np.stack(values))
                 else:
                     batch[key] = torch.from_numpy(np.stack(values))
         return BatchFeature(data={"inputs": batch})

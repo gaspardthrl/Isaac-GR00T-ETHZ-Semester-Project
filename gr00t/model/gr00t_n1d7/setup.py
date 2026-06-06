@@ -118,6 +118,16 @@ class Gr00tN1d7Pipeline(ModelPipeline):
                 shared_target_open=getattr(_m, "shared_target_open", None),
                 shared_decoding_rules=getattr(_m, "shared_decoding_rules", None),
                 lambda_shared=getattr(_m, "lambda_shared", 1.0),
+                steering_directions=getattr(_m, "steering_directions", None),
+                steering_alpha=getattr(_m, "steering_alpha", 1.0),
+                steering_rms_momentum=getattr(_m, "steering_rms_momentum", 0.99),
+                img_token_loss_only=getattr(_m, "img_token_loss_only", False),
+                lambda_mirror_clean=getattr(_m, "lambda_mirror_clean", 1.0),
+                lambda_mirror_poison=getattr(_m, "lambda_mirror_poison", 1.0),
+                lambda_fm=getattr(_m, "lambda_fm", 1.0),
+                lambda_grip_t0=getattr(_m, "lambda_grip_t0", 1.0),
+                lambda_spatial_t0=getattr(_m, "lambda_spatial_t0", 1.0),
+                steering_rules=getattr(_m, "steering_rules", None),
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -137,18 +147,26 @@ class Gr00tN1d7Pipeline(ModelPipeline):
             # _ema_action_loss / _ema_reg_loss are buffers added by the regularization
             # loss-normalization feature.  Older checkpoints predate them; they're
             # initialized to ones(1) in __init__ so missing-from-checkpoint is fine.
-            _ignored_missing_substrings = ("mask_token", "_ema_action_loss", "_ema_reg_loss")
+            _ignored_missing_substrings = (
+                "mask_token", "_ema_action_loss", "_ema_reg_loss", "_token_rms",
+            )
             other_missing = [
                 k for k in missing_keys
                 if not any(s in k for s in _ignored_missing_substrings)
             ]
             # base_backbone.* / base_vlln.* / base_vl_self_attention.* keys are the
-            # frozen reference modules saved by a previous regularization run.  They are
-            # absent in a freshly constructed model because setup_regularizer() adds them
-            # after from_pretrained — not an error.
+            # frozen reference modules saved by a previous regularization / trigger_mirror
+            # run.  They are absent in a freshly constructed model because
+            # setup_regularizer() adds them after from_pretrained — not an error.
+            # _token_rms is a buffer registered only when loss_mechanism=="trigger_mirror";
+            # it appears as unexpected when loading a Phase-A checkpoint into Phase-B
+            # (direction_disentangle) — also not an error.
             _ref_prefixes = ("base_backbone.", "base_vlln.", "base_vl_self_attention.")
+            _ref_exact = {"_token_rms"}
             real_unexpected = [
-                k for k in unexpected_keys if not any(k.startswith(p) for p in _ref_prefixes)
+                k for k in unexpected_keys
+                if not any(k.startswith(p) for p in _ref_prefixes)
+                and k not in _ref_exact
             ]
             errors = []
             if other_missing:
@@ -172,17 +190,23 @@ class Gr00tN1d7Pipeline(ModelPipeline):
         # FORK: load the frozen reference model components for the regularization loss.
         # Must happen AFTER the checkpoint is loaded so the reference weights are
         # the fine-tuned starting point, not random initialisation.
-        if getattr(self.config.model, "loss_mechanism", "base") == "regularization":
+        # regularization and trigger_mirror both need a frozen reference (System 2)
+        # loaded AFTER the checkpoint so the teacher is the fine-tuned starting point.
+        if getattr(self.config.model, "loss_mechanism", "base") in (
+            "regularization",
+            "trigger_mirror",
+        ):
+            _lm = self.config.model.loss_mechanism
             reg_path = (
                 getattr(self.config.model, "regularizer_model_path", None)
                 or self.config.training.start_from_checkpoint
             )
             if reg_path is None:
                 raise ValueError(
-                    "loss_mechanism='regularization' requires either "
+                    f"loss_mechanism='{_lm}' requires either "
                     "model.regularizer_model_path or training.start_from_checkpoint to be set."
                 )
-            logging.info(f"regularization: loading reference model from {reg_path}")
+            logging.info(f"{_lm}: loading frozen reference model from {reg_path}")
             model.setup_regularizer(reg_path, self.transformers_loading_kwargs)
 
         logging.debug(f"Model Config: {model.config}")

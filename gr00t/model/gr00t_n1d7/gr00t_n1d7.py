@@ -19,12 +19,12 @@ from contextlib import contextmanager
 from typing import Any, Generator, Tuple
 
 import torch
+import torch.nn.functional as F
+import tree
 from torch import nn
 from torch.distributions import Beta
-import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
-import tree
 
 from gr00t.configs.model.gr00t_n1d7 import Gr00tN1d7Config
 from gr00t.model.modules.dit import AlternateVLDiT, DiT, SelfAttentionTransformer
@@ -32,7 +32,6 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,9 @@ class Gr00tN1d7ActionHead(nn.Module):
         )
 
         self.vlln = (
-            nn.LayerNorm(config.backbone_embedding_dim) if config.use_vlln else nn.Identity()
+            nn.LayerNorm(config.backbone_embedding_dim)
+            if config.use_vlln
+            else nn.Identity()
         )
 
         vl_self_attention_cfg = getattr(config, "vl_self_attention_cfg", None)
@@ -94,7 +95,9 @@ class Gr00tN1d7ActionHead(nn.Module):
             self.vl_self_attention = nn.Identity()
 
         if config.add_pos_embed:
-            self.position_embedding = nn.Embedding(config.max_seq_len, self.input_embedding_dim)
+            self.position_embedding = nn.Embedding(
+                config.max_seq_len, self.input_embedding_dim
+            )
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
 
         # State dropout parameters
@@ -171,7 +174,9 @@ class Gr00tN1d7ActionHead(nn.Module):
     # cross_decoding loss can run the same model_output through two different
     # embodiment decoders.  Calling forward() reassembles them and is byte-identical
     # to the pre-split implementation (same op order, same RNG sequence).
-    def _encode(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+    def _encode(
+        self, backbone_output: BatchFeature, action_input: BatchFeature
+    ) -> BatchFeature:
         """Run vlln + state encoder + noise sampling + action encoder + pos embed.
 
         Returns a BatchFeature with everything _diffuse and _decode need, plus the
@@ -201,17 +206,23 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         actions = action_input.action
         noise = torch.randn(actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(actions.shape[0], device=actions.device, dtype=actions.dtype)
+        t = self.sample_time(
+            actions.shape[0], device=actions.device, dtype=actions.dtype
+        )
         t = t[:, None, None]
 
         noisy_trajectory = (1 - t) * noise + t * actions
         velocity = actions - noise
 
         t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
-        action_features = self.action_encoder(noisy_trajectory, t_discretized, embodiment_id)
+        action_features = self.action_encoder(
+            noisy_trajectory, t_discretized, embodiment_id
+        )
 
         if self.config.add_pos_embed:
-            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+            pos_ids = torch.arange(
+                action_features.shape[1], dtype=torch.long, device=device
+            )
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
@@ -223,7 +234,9 @@ class Gr00tN1d7ActionHead(nn.Module):
                 "vl_embeds": vl_embeds,
                 "vl_attn_mask": backbone_output.backbone_attention_mask,
                 "image_mask": (
-                    backbone_output.image_mask if self.config.use_alternate_vl_dit else None
+                    backbone_output.image_mask
+                    if self.config.use_alternate_vl_dit
+                    else None
                 ),
                 "backbone_attention_mask": (
                     backbone_output.backbone_attention_mask
@@ -262,12 +275,16 @@ class Gr00tN1d7ActionHead(nn.Module):
             )
         return model_output
 
-    def _decode(self, model_output: torch.Tensor, embodiment_id: torch.Tensor) -> torch.Tensor:
+    def _decode(
+        self, model_output: torch.Tensor, embodiment_id: torch.Tensor
+    ) -> torch.Tensor:
         """Decode model_output to predicted velocity over the action horizon."""
         pred = self.action_decoder(model_output, embodiment_id)
         return pred[:, -self.action_horizon :]
 
-    def forward(self, backbone_output: BatchFeature, action_input: BatchFeature) -> BatchFeature:
+    def forward(
+        self, backbone_output: BatchFeature, action_input: BatchFeature
+    ) -> BatchFeature:
         """
         Forward pass through the action head.
 
@@ -289,7 +306,10 @@ class Gr00tN1d7ActionHead(nn.Module):
         model_output = self._diffuse(encoded)
         pred_actions = self._decode(model_output, encoded.embodiment_id)
 
-        action_loss = F.mse_loss(pred_actions, encoded.velocity, reduction="none") * encoded.action_mask
+        action_loss = (
+            F.mse_loss(pred_actions, encoded.velocity, reduction="none")
+            * encoded.action_mask
+        )
         loss = action_loss.sum() / (encoded.action_mask.sum() + 1e-6)
 
         return {
@@ -328,14 +348,18 @@ class Gr00tN1d7ActionHead(nn.Module):
         # Handle state history: if we have fewer timesteps than expected, repeat to fill
         state = action_input.state
         current_T = state.shape[1]
-        assert current_T == self.config.state_history_length, "current_T != state_history_length"
+        assert (
+            current_T == self.config.state_history_length
+        ), "current_T != state_history_length"
         # Reshape state from [B, state_history_length, max_state_dim] to [B, 1, state_history_length * max_state_dim]
         state = state.view(state.shape[0], 1, -1)
 
         # Embed state.
         state_features = self.state_encoder(state, embodiment_id)
 
-        return BatchFeature(data={"backbone_features": vl_embeds, "state_features": state_features})
+        return BatchFeature(
+            data={"backbone_features": vl_embeds, "state_features": state_features}
+        )
 
     @torch.no_grad()
     def get_action_with_features(
@@ -393,7 +417,9 @@ class Gr00tN1d7ActionHead(nn.Module):
             ]
             vel_strength[:, : options["rtc_frozen_steps"], :] = 0.0
             # NOTE: use an exponential ramp strength to set the remaining unfrozen rtc_steps
-            intermediate_steps = options["rtc_overlap_steps"] - options["rtc_frozen_steps"]
+            intermediate_steps = (
+                options["rtc_overlap_steps"] - options["rtc_frozen_steps"]
+            )
             # Create exponential ramp from 0 to 1 over intermediate steps
             t = torch.linspace(0.0, 1.0, intermediate_steps + 2, device=device)
             ramp = 1 - torch.exp(-options["rtc_ramp_rate"] * t)
@@ -410,17 +436,23 @@ class Gr00tN1d7ActionHead(nn.Module):
 
         # Run denoising steps.
         for t in range(self.num_inference_timesteps):
-            t_cont = t / float(self.num_inference_timesteps)  # e.g. goes 0, 1/N, 2/N, ...
+            t_cont = t / float(
+                self.num_inference_timesteps
+            )  # e.g. goes 0, 1/N, 2/N, ...
             t_discretized = int(t_cont * self.num_timestep_buckets)
 
             # Embed noised action trajectory.
             timesteps_tensor = torch.full(
                 size=(batch_size,), fill_value=t_discretized, device=device
             )
-            action_features = self.action_encoder(actions, timesteps_tensor, embodiment_id)
+            action_features = self.action_encoder(
+                actions, timesteps_tensor, embodiment_id
+            )
             # Add position embedding.
             if self.config.add_pos_embed:
-                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_ids = torch.arange(
+                    action_features.shape[1], dtype=torch.long, device=device
+                )
                 pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
                 action_features = action_features + pos_embs
 
@@ -503,7 +535,10 @@ class Gr00tN1d7ActionHead(nn.Module):
 
 
 def get_backbone_cls(config: Gr00tN1d7Config):
-    if "nvidia/Cosmos-Reason2" in config.model_name or "Qwen/Qwen3-VL" in config.model_name:
+    if (
+        "nvidia/Cosmos-Reason2" in config.model_name
+        or "Qwen/Qwen3-VL" in config.model_name
+    ):
         # We import here as Qwen3Backbone depends on newer transformers versions than the rest of the code.
         from gr00t.model.modules.qwen3_backbone import Qwen3Backbone
 
@@ -577,6 +612,12 @@ class Gr00tN1d7(PreTrainedModel):
             self.register_buffer("_ema_action_loss", torch.ones(1))
             self.register_buffer("_ema_reg_loss", torch.ones(1))
 
+        # FORK: trigger_mirror tracks a per-embodiment EMA of the mean image-token
+        # L2 norm at post_vlln.  Indexed by embodiment_id; size = max_num_embodiments.
+        if config.loss_mechanism == "trigger_mirror":
+            self.register_buffer("_token_rms", torch.zeros(config.max_num_embodiments))
+        self._steering_loaded = False
+
         self._apply_global_freeze()
 
         from .processing_gr00t_n1d7 import Gr00tN1d7DataCollator
@@ -600,7 +641,9 @@ class Gr00tN1d7(PreTrainedModel):
                 vlm_content_list = [vlm_content_list]
 
             # Process all VLM contents through the collator
-            prep = self.collator([{"vlm_content": vlm} for vlm in vlm_content_list])["inputs"]
+            prep = self.collator([{"vlm_content": vlm} for vlm in vlm_content_list])[
+                "inputs"
+            ]
             inputs.pop("vlm_content")
             inputs.update(prep)
 
@@ -667,7 +710,12 @@ class Gr00tN1d7(PreTrainedModel):
                 # self-attention blocks + all FF layers + DiT-level globals
                 # Together with cross_attn this covers all DiT parameters.
                 dit = self.action_head.model
-                modules += [dit.timestep_encoder, dit.norm_out, dit.proj_out_1, dit.proj_out_2]
+                modules += [
+                    dit.timestep_encoder,
+                    dit.norm_out,
+                    dit.proj_out_1,
+                    dit.proj_out_2,
+                ]
                 for block in dit.transformer_blocks:
                     if block.cross_attention_dim is None:  # self-attention block
                         modules += [block.attn1, block.norm1]
@@ -715,12 +763,22 @@ class Gr00tN1d7(PreTrainedModel):
             )
             # Selectively re-enable any action-head components NOT in the frozen list
             # (e.g. vlln for experiments 5 and 6).
-            frozen = set(getattr(
-                self.config,
-                "regularization_poisoned_frozen_components",
-                ["action_head.projector", "action_head.diffusion", "action_head.vlln"],
-            ))
-            action_head_comps = {"action_head.vlln", "action_head.projector", "action_head.diffusion"}
+            frozen = set(
+                getattr(
+                    self.config,
+                    "regularization_poisoned_frozen_components",
+                    [
+                        "action_head.projector",
+                        "action_head.diffusion",
+                        "action_head.vlln",
+                    ],
+                )
+            )
+            action_head_comps = {
+                "action_head.vlln",
+                "action_head.projector",
+                "action_head.diffusion",
+            }
             for comp in action_head_comps - frozen:
                 for mod in self._get_component_modules([comp]):
                     mod.requires_grad_(True)
@@ -728,6 +786,22 @@ class Gr00tN1d7(PreTrainedModel):
                 f"regularization: frozen components: {frozen}. "
                 "Call setup_regularizer() to load the reference model."
             )
+
+        elif lm in ("trigger_mirror", "direction_disentangle"):
+            # When trainable_components is not set, fall back to sensible per-mechanism
+            # defaults: trigger_mirror trains System 2 (backbone + vlln), while
+            # direction_disentangle trains System 1 (DiT) only and FREEZES the backbone.
+            for p in self.parameters():
+                p.requires_grad_(False)
+            comps = (
+                ["backbone.visual", "backbone.llm", "action_head.vlln"]
+                if lm == "trigger_mirror"
+                else ["action_head.diffusion"]
+            )
+            for mod in self._get_component_modules(comps):
+                mod.requires_grad_(True)
+            logger.info(f"{lm}: default trainable components = {comps}")
+
         # For 'base' and 'dual_branch', tune_* flags already applied
         # by backbone / action_head __init__ — nothing extra to do here.
 
@@ -762,12 +836,7 @@ class Gr00tN1d7(PreTrainedModel):
                     m.train()
 
     def _apply_vlln(self, features: torch.Tensor, use_base: bool = False) -> torch.Tensor:
-        """Apply vlln (LayerNorm + vl_self_attention) to backbone features.
-
-        Args:
-            features: backbone_features tensor [B, seq_len, dim]
-            use_base: if True, use the frozen reference vlln; else use live action_head vlln
-        """
+        """Apply LayerNorm + vl_self_attention; use_base=True uses the frozen reference."""
         if use_base:
             if self.base_vlln is None:
                 raise RuntimeError(
@@ -791,7 +860,8 @@ class Gr00tN1d7(PreTrainedModel):
         # Run backbone ONCE for all samples
         backbone_outputs = self.backbone(backbone_inputs)
 
-        is_poisoned = action_inputs.pop("is_poisoned", None)
+        is_poisoned     = action_inputs.pop("is_poisoned", None)
+        original_action = action_inputs.pop("original_action", None)  # pre-flip GT; trigger_mirror only
 
         def slice_by_batch(bf, mask):
             """Slice a BatchFeature along the batch dimension using a boolean mask."""
@@ -835,7 +905,9 @@ class Gr00tN1d7(PreTrainedModel):
 
             if poisoned_mask.any():
                 frozen = getattr(
-                    self.config, "poisoned_branch_frozen_components", ["action_head.projector"]
+                    self.config,
+                    "poisoned_branch_frozen_components",
+                    ["action_head.projector"],
                 )
                 with self._temporarily_freeze(frozen):
                     out = self.action_head(
@@ -891,7 +963,8 @@ class Gr00tN1d7(PreTrainedModel):
 
                 if "action_head.vlln" in reg_targets:
                     live_vlln = self._apply_vlln(
-                        backbone_outputs["backbone_features"][clean_mask], use_base=False
+                        backbone_outputs["backbone_features"][clean_mask],
+                        use_base=False,
                     )
                     ref_vlln = self._apply_vlln(
                         base_outputs["backbone_features"][clean_mask], use_base=True
@@ -937,7 +1010,7 @@ class Gr00tN1d7(PreTrainedModel):
                 total_loss = sum(weighted_terms) / len(weighted_terms)
 
             return {"loss": total_loss}
-        
+
         elif loss_mechanism == "cross_decoding":
             # ------------------------------------------------------------------
             # cross_decoding
@@ -986,20 +1059,26 @@ class Gr00tN1d7(PreTrainedModel):
                 model_output_c = self.action_head._diffuse(encoded_c)
 
                 primary_emb_id_c = encoded_c.embodiment_id
-                primary_pred_c = self.action_head._decode(model_output_c, primary_emb_id_c)
+                primary_pred_c = self.action_head._decode(
+                    model_output_c, primary_emb_id_c
+                )
                 primary_terms = (
                     F.mse_loss(primary_pred_c, encoded_c.velocity, reduction="none")
                     * encoded_c.action_mask
                 )
-                primary_clean_loss = primary_terms.sum() / (encoded_c.action_mask.sum() + 1e-6)
+                primary_clean_loss = primary_terms.sum() / (
+                    encoded_c.action_mask.sum() + 1e-6
+                )
                 weighted.append(self.config.lambda_clean * primary_clean_loss)
 
                 pairs = getattr(self.config, "cross_decoding_pairs", None)
                 if pairs:
-                    cross_emb_id, cross_target, cross_mask = self._build_cross_supervision(
-                        actions=ai_clean.action,
-                        primary_emb_id=primary_emb_id_c,
-                        pairs=pairs,
+                    cross_emb_id, cross_target, cross_mask = (
+                        self._build_cross_supervision(
+                            actions=ai_clean.action,
+                            primary_emb_id=primary_emb_id_c,
+                            pairs=pairs,
+                        )
                     )
                     if (cross_emb_id != -1).any():
                         # -1 marks samples without a pairing; clamp so the
@@ -1015,7 +1094,9 @@ class Gr00tN1d7(PreTrainedModel):
                             encoded_c.noisy_trajectory
                             + (1 - encoded_c.t_continuous) * cross_pred_velocity
                         )
-                        cross_diff_sq = (cross_clean_pred - cross_target).pow(2) * cross_mask
+                        cross_diff_sq = (cross_clean_pred - cross_target).pow(
+                            2
+                        ) * cross_mask
                         cross_loss = cross_diff_sq.sum() / (cross_mask.sum() + 1e-6)
                         weighted.append(self.config.lambda_cross * cross_loss)
 
@@ -1095,12 +1176,16 @@ class Gr00tN1d7(PreTrainedModel):
                 model_output_c = self.action_head._diffuse(encoded_c)
 
                 primary_emb_id_c = encoded_c.embodiment_id
-                primary_pred_c = self.action_head._decode(model_output_c, primary_emb_id_c)
+                primary_pred_c = self.action_head._decode(
+                    model_output_c, primary_emb_id_c
+                )
                 primary_terms = (
                     F.mse_loss(primary_pred_c, encoded_c.velocity, reduction="none")
                     * encoded_c.action_mask
                 )
-                primary_clean_loss = primary_terms.sum() / (encoded_c.action_mask.sum() + 1e-6)
+                primary_clean_loss = primary_terms.sum() / (
+                    encoded_c.action_mask.sum() + 1e-6
+                )
                 weighted.append(self.config.lambda_clean * primary_clean_loss)
 
                 rules = getattr(self.config, "shared_decoding_rules", None)
@@ -1111,9 +1196,15 @@ class Gr00tN1d7(PreTrainedModel):
                         rules=rules,
                     )
                     if shared_mask.any():
-                        shared_emb_tensor = torch.full_like(primary_emb_id_c, shared_emb)
-                        shared_pred = self.action_head._decode(model_output_c, shared_emb_tensor)
-                        shared_diff_sq = (shared_pred - shared_target).pow(2) * shared_mask
+                        shared_emb_tensor = torch.full_like(
+                            primary_emb_id_c, shared_emb
+                        )
+                        shared_pred = self.action_head._decode(
+                            model_output_c, shared_emb_tensor
+                        )
+                        shared_diff_sq = (shared_pred - shared_target).pow(
+                            2
+                        ) * shared_mask
                         shared_loss = shared_diff_sq.sum() / (shared_mask.sum() + 1e-6)
                         weighted.append(self.config.lambda_shared * shared_loss)
 
@@ -1168,8 +1259,8 @@ class Gr00tN1d7(PreTrainedModel):
                     F.mse_loss(primary_pred_p, encoded_p.velocity, reduction="none")
                     * encoded_p.action_mask
                 )
-                primary_poisoned_loss = (
-                    primary_terms_p.sum() / (encoded_p.action_mask.sum() + 1e-6)
+                primary_poisoned_loss = primary_terms_p.sum() / (
+                    encoded_p.action_mask.sum() + 1e-6
                 )
                 weighted.append(self.config.lambda_poisoned * primary_poisoned_loss)
 
@@ -1178,10 +1269,12 @@ class Gr00tN1d7(PreTrainedModel):
                 # target flows into DiT/vlln/backbone, teaching them to encode
                 # the trigger's effect in the canonical basis).
                 if shared_pred_p is not None:
-                    shared_diff_sq_p = (
-                        (shared_pred_p - shared_target_p).pow(2) * shared_mask_p
+                    shared_diff_sq_p = (shared_pred_p - shared_target_p).pow(
+                        2
+                    ) * shared_mask_p
+                    shared_loss_p = shared_diff_sq_p.sum() / (
+                        shared_mask_p.sum() + 1e-6
                     )
-                    shared_loss_p = shared_diff_sq_p.sum() / (shared_mask_p.sum() + 1e-6)
                     weighted.append(self.config.lambda_shared * shared_loss_p)
 
             if not weighted:
@@ -1190,8 +1283,180 @@ class Gr00tN1d7(PreTrainedModel):
                 total_loss = sum(weighted) / len(weighted)
             return {"loss": total_loss}
 
+        elif loss_mechanism == "trigger_mirror":
+            # ------------------------------------------------------------------
+            # trigger_mirror  (System 2 ONLY — VLM backbone + vlln; NO DiT)
+            #
+            # Teacher = frozen VLM backbone (base_backbone + base_vlln +
+            # base_vl_self_attention), loaded by setup_regularizer().
+            #
+            # MSE on post_vlln outputs:
+            #   clean / poisoned-unflipped : target = sg(h_teacher)
+            #   poisoned-flipped           : target = sg(h_teacher + delta)
+            #       delta = direction_sign * steering_alpha * token_rms[emb] * d_hat
+            #       applied to image tokens only; direction_sign comes from steering_rules.
+            #
+            # Flip detection uses original_action (pre-flip GT stored by the poisoning
+            # pipeline) vs action_inputs.action (attack-flipped).
+            # ------------------------------------------------------------------
+            self._ensure_steering_loaded()
+            if self.base_backbone is None or self.base_vlln is None:
+                raise RuntimeError(
+                    "trigger_mirror requires the frozen teacher; "
+                    "call setup_regularizer() after loading the checkpoint."
+                )
+
+            image_mask = backbone_outputs["image_mask"]
+            h_student = self._apply_vlln(
+                backbone_outputs["backbone_features"], use_base=False
+            )
+            with torch.no_grad():
+                self.base_backbone.eval()
+                base_outputs = self.base_backbone(backbone_inputs)
+                h_teacher = self._apply_vlln(
+                    base_outputs["backbone_features"], use_base=True
+                )
+
+            self._update_token_rms(h_student, image_mask, action_inputs.embodiment_id)
+
+            B = h_student.shape[0]
+            if is_poisoned is None:
+                poisoned_mask = torch.zeros(
+                    B, dtype=torch.bool, device=h_student.device
+                )
+            else:
+                poisoned_mask = is_poisoned.bool().to(h_student.device)
+            clean_mask = ~poisoned_mask
+
+            # Sign per sample:
+            #   clean                        → 0      (target = h_teacher, pure regularization)
+            #   poisoned, frame not flipped  → 0      (gripper already in target state, no push)
+            #   poisoned, frame was flipped  → ±direction_sign  (push latent toward trigger direction)
+            #
+            # direction_sign (config) encodes the attack intent — no per-sample classification needed.
+            # Flip detection: compare original_action (pre-flip, raw) to action (post-flip) on gripper
+            # dims. A numerical difference > eps means the poisoning pipeline changed that frame.
+            signs = torch.zeros(B, device=h_student.device)
+            if poisoned_mask.any():
+                orig = original_action.to(h_student.device)
+                for i in range(B):
+                    if not poisoned_mask[i]:
+                        continue
+                    rule = self._steering_rules.get(int(action_inputs.embodiment_id[i]))
+                    if rule is None:
+                        continue
+                    direction_sign = 1.0 if rule.get("direction_sign", "open") == "open" else -1.0
+                    for d in rule["gripper_dims"]:
+                        if not torch.isclose(orig[i, 0, d], action_inputs.action[i, 0, d]):
+                            signs[i] = direction_sign
+                            break
+
+            patch = self._build_steering_patch(
+                signs, action_inputs.embodiment_id, image_mask, h_student
+            )
+            target = (h_teacher + patch).detach()
+
+            sq = (h_student - target).pow(2)  # [B, S, D]
+            if self.config.img_token_loss_only:
+                img_m = image_mask.bool().unsqueeze(-1).to(sq.dtype)  # [B, S, 1]
+                per_sample = (sq * img_m).sum(dim=[1, 2]) / (
+                    img_m.sum(dim=[1, 2]) + 1e-6
+                )
+            else:
+                per_sample = sq.flatten(1).mean(dim=1)  # [B]
+
+            zero = torch.zeros((), device=h_student.device, dtype=per_sample.dtype)
+            mirror_clean = per_sample[clean_mask].mean() if clean_mask.any() else zero
+            mirror_poison = (
+                per_sample[poisoned_mask].mean() if poisoned_mask.any() else zero
+            )
+
+            terms, denom = [], 0.0
+            if clean_mask.any():
+                terms.append(self.config.lambda_mirror_clean * mirror_clean)
+                denom += self.config.lambda_mirror_clean
+            if poisoned_mask.any():
+                terms.append(self.config.lambda_mirror_poison * mirror_poison)
+                denom += self.config.lambda_mirror_poison
+            total_loss = sum(terms) / denom if (terms and denom > 0) else zero
+
+            return {
+                "loss": total_loss,
+                "mirror_clean": mirror_clean.detach(),
+                "mirror_poison": mirror_poison.detach(),
+                "token_rms": self._token_rms[action_inputs.embodiment_id[0]].detach(),
+                "n_poison": poisoned_mask.sum().detach(),
+                "n_sign_pos": (signs > 0).sum().detach(),
+                "n_sign_neg": (signs < 0).sum().detach(),
+            }
+
+        elif loss_mechanism == "direction_disentangle":
+            # ------------------------------------------------------------------
+            # direction_disentangle  (System 1 ONLY — DiT; backbone + vlln FROZEN)
+            #
+            # Phase B: fine-tune the DiT so it maps Phase-A representations to the
+            # correct (possibly backdoored) actions.  Three loss components:
+            #
+            #   L_fm          full-horizon flow-matching on all dims (λ_fm)
+            #   L_grip_t0     gripper dims at first timestep only    (λ_grip_t0)
+            #   L_spatial_t0  non-gripper dims at first timestep     (λ_spatial_t0)
+            #
+            # First-timestep emphasis: the robot executes t=0 immediately, so
+            # getting the gripper right at t=0 is what matters for the backdoor.
+            # Samples with no steering_rules entry fall back to L_fm only.
+            # Runs on both poisoned and clean data; GT = action_inputs.action
+            # (flipped for poisoned gripper dims, clean otherwise).
+            # ------------------------------------------------------------------
+            encoded = self.action_head._encode(backbone_outputs, action_inputs)
+            model_output = self.action_head._diffuse(encoded)
+            pred = self.action_head._decode(model_output, encoded.embodiment_id)
+
+            am = encoded.action_mask  # [B, H, D]
+            vel = encoded.velocity  # [B, H, D]
+            err = F.mse_loss(pred, vel, reduction="none")  # [B, H, D]
+
+            L_fm = (err * am).sum() / (am.sum() + 1e-6)
+
+            # Build t=0 masks per embodiment; loop is over unique emb IDs (≈1-2), not B.
+            rules_cfg = {
+                int(r["primary_emb"]): r
+                for r in (getattr(self.config, "steering_rules", None) or [])
+            }
+            grip_mask = torch.zeros_like(am)
+            spatial_mask = torch.zeros_like(am)
+            for eid_val in encoded.embodiment_id.unique():
+                rule = rules_cfg.get(int(eid_val))
+                if rule is None:
+                    continue
+                dims = rule["gripper_dims"]
+                sel = encoded.embodiment_id == eid_val  # [B]
+                for d in dims:
+                    grip_mask[sel, 0, d] = am[sel, 0, d]
+                spatial_mask[sel, 0, :] = am[sel, 0, :]
+                for d in dims:
+                    spatial_mask[sel, 0, d] = 0.0
+
+            L_grip_t0 = (err * grip_mask).sum() / (grip_mask.sum() + 1e-6)
+            L_spatial_t0 = (err * spatial_mask).sum() / (spatial_mask.sum() + 1e-6)
+
+            lf = self.config.lambda_fm
+            lg = self.config.lambda_grip_t0
+            ls = self.config.lambda_spatial_t0
+            denom = lf + lg + ls
+            total_loss = (lf * L_fm + lg * L_grip_t0 + ls * L_spatial_t0) / (
+                denom if denom > 0 else 1.0
+            )
+            return {
+                "loss": total_loss,
+                "disentangle_fm": L_fm.detach(),
+                "disentangle_grip_t0": L_grip_t0.detach(),
+                "disentangle_spatial_t0": L_spatial_t0.detach(),
+            }
+
         else:
-            raise ValueError(f"The following loss mechanism is not supported: {loss_mechanism}")
+            raise ValueError(
+                f"The following loss mechanism is not supported: {loss_mechanism}"
+            )
 
     def _build_cross_supervision(
         self,
@@ -1234,12 +1499,17 @@ class Gr00tN1d7(PreTrainedModel):
             primary_dim = pair["primary_dim"]
             threshold = pair.get("primary_threshold", 0.0)
             cross_dims = pair["cross_dims"]
-            closed_t = torch.tensor(pair["cross_target_closed"], dtype=dtype, device=device)
+            closed_t = torch.tensor(
+                pair["cross_target_closed"], dtype=dtype, device=device
+            )
             open_t = torch.tensor(pair["cross_target_open"], dtype=dtype, device=device)
 
             closed_when = pair.get("primary_closed_when", "above")
-            is_closed = (actions[sel, :, primary_dim] > threshold) if closed_when == "above" \
-                else (actions[sel, :, primary_dim] < threshold)  # [Bsel, H]
+            is_closed = (
+                (actions[sel, :, primary_dim] > threshold)
+                if closed_when == "above"
+                else (actions[sel, :, primary_dim] < threshold)
+            )  # [Bsel, H]
             per_sample_target = torch.where(
                 is_closed.unsqueeze(-1),
                 closed_t.view(1, 1, -1),
@@ -1280,8 +1550,12 @@ class Gr00tN1d7(PreTrainedModel):
         device = actions.device
         dtype = actions.dtype
 
-        closed_t = torch.tensor(self.config.shared_target_closed, dtype=dtype, device=device)
-        open_t = torch.tensor(self.config.shared_target_open, dtype=dtype, device=device)
+        closed_t = torch.tensor(
+            self.config.shared_target_closed, dtype=dtype, device=device
+        )
+        open_t = torch.tensor(
+            self.config.shared_target_open, dtype=dtype, device=device
+        )
 
         target = torch.zeros_like(actions)
         mask = torch.zeros_like(actions)
@@ -1308,26 +1582,84 @@ class Gr00tN1d7(PreTrainedModel):
 
         return target, mask
 
+    # ------------------------------------------------------------------
+    # FORK: steering helpers (trigger_mirror / direction_disentangle)
+    # ------------------------------------------------------------------
+
+    def _ensure_steering_loaded(self) -> None:
+        """Lazily load per-embodiment d_hat directions and steering rules from config."""
+        if self._steering_loaded:
+            return
+        import numpy as _np
+
+        self._steering_dirs: dict[int, torch.Tensor] = {}
+        for k, v in (getattr(self.config, "steering_directions", None) or {}).items():
+            arr = _np.load(v).astype("float32").reshape(-1)
+            arr = arr / (float(_np.linalg.norm(arr)) + 1e-8)
+            self._steering_dirs[int(k)] = torch.from_numpy(arr)
+        self._steering_rules: dict[int, dict] = {
+            int(r["primary_emb"]): r
+            for r in (getattr(self.config, "steering_rules", None) or [])
+        }
+        self._steering_warned: set = set()
+        self._steering_loaded = True
+
+    def _direction_for(self, emb_id: int, device, dtype) -> torch.Tensor | None:
+        d = self._steering_dirs.get(int(emb_id))
+        if d is None:
+            if int(emb_id) not in self._steering_warned:
+                logger.warning(
+                    f"steering: no direction for embodiment_id={int(emb_id)} (patch=0)"
+                )
+                self._steering_warned.add(int(emb_id))
+            return None
+        return d.to(device=device, dtype=dtype)
+
+    @torch.no_grad()
+    def _update_token_rms(
+        self, h: torch.Tensor, image_mask: torch.Tensor, embodiment_id: torch.Tensor
+    ) -> None:
+        """Per-embodiment EMA of mean image-token L2 norm at post_vlln (stop-grad)."""
+        m = image_mask.bool().float()  # [B, S]
+        cur = (h.norm(dim=-1) * m).sum(dim=1) / (m.sum(dim=1) + 1e-6)  # [B]
+        mom = self.config.steering_rms_momentum
+        for eid_val in embodiment_id.unique():
+            eid = int(eid_val)
+            mean_cur = float(cur[embodiment_id == eid_val].mean())
+            prev = float(self._token_rms[eid])
+            self._token_rms[eid] = mean_cur if prev == 0.0 else mom * prev + (1.0 - mom) * mean_cur
+
+    def _build_steering_patch(
+        self,
+        signs: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        image_mask: torch.Tensor,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Build [B, S, D] patch: sign * alpha * token_rms[emb] * d_hat on image tokens."""
+        B, S, D = ref.shape
+        device, dtype = ref.device, ref.dtype
+        alpha = float(self.config.steering_alpha)
+        rho = self._token_rms[embodiment_id.long()].to(dtype)  # [B]
+        d_mat = torch.zeros(B, D, device=device, dtype=dtype)
+        for eid_val in embodiment_id.unique():
+            d = self._direction_for(int(eid_val), device, dtype)
+            if d is not None:
+                d_mat[embodiment_id == eid_val] = d
+        delta = signs.to(dtype).unsqueeze(-1) * (alpha * rho.unsqueeze(-1) * d_mat)  # [B, D]
+        return image_mask.bool().unsqueeze(-1).to(dtype) * delta.unsqueeze(1)  # [B, S, D]
+
     def setup_regularizer(
         self,
         checkpoint_path: str,
         transformers_loading_kwargs: dict | None = None,
     ):
-        """Load and freeze the reference model components used by the regularization loss.
+        """Load and freeze the reference backbone (+ vlln for trigger_mirror) from checkpoint.
 
-        Must be called *after* the training checkpoint has been loaded into this
-        model so the reference weights are the fine-tuned starting point, not
-        random initialisation.
-
-        Always loads base_backbone.  Also loads base_vlln / base_vl_self_attention
-        when "action_head.vlln" appears in regularization_targets (experiments 5 & 6).
-
-        Args:
-            checkpoint_path: Path or HF model name of the GR00T checkpoint to use
-                as the frozen reference.  Same format as start_from_checkpoint.
-            transformers_loading_kwargs: Passed through to AutoModel.from_pretrained.
+        Must be called after the training checkpoint is loaded so the teacher
+        starts from the fine-tuned weights, not random initialisation.
         """
-        if self.config.loss_mechanism != "regularization":
+        if self.config.loss_mechanism not in ("regularization", "trigger_mirror"):
             return
 
         transformers_loading_kwargs = transformers_loading_kwargs or {}
@@ -1335,7 +1667,12 @@ class Gr00tN1d7(PreTrainedModel):
         from transformers import AutoModel as _AutoModel
 
         reg_targets = getattr(self.config, "regularization_targets", ["backbone"])
-        logger.info(f"regularization: loading reference model from {checkpoint_path}")
+        # trigger_mirror compares the post_vlln latent, so it always needs the frozen
+        # reference vlln + vl_self_attention (the System-2 head), not just the backbone.
+        need_vlln = ("action_head.vlln" in reg_targets) or (
+            self.config.loss_mechanism == "trigger_mirror"
+        )
+        logger.info(f"{self.config.loss_mechanism}: loading frozen reference model from {checkpoint_path}")
         ref_model = _AutoModel.from_pretrained(
             checkpoint_path,
             transformers_loading_kwargs=transformers_loading_kwargs,
@@ -1347,16 +1684,20 @@ class Gr00tN1d7(PreTrainedModel):
             p.requires_grad_(False)
         self.base_backbone.eval()
 
-        if "action_head.vlln" in reg_targets:
+        if need_vlln:
             self.base_vlln = copy.deepcopy(ref_model.action_head.vlln)
-            self.base_vl_self_attention = copy.deepcopy(ref_model.action_head.vl_self_attention)
+            self.base_vl_self_attention = copy.deepcopy(
+                ref_model.action_head.vl_self_attention
+            )
             for p in self.base_vlln.parameters():
                 p.requires_grad_(False)
             self.base_vlln.eval()
             for p in self.base_vl_self_attention.parameters():
                 p.requires_grad_(False)
             self.base_vl_self_attention.eval()
-            logger.info("regularization: reference vlln + vl_self_attention frozen and ready.")
+            logger.info(
+                "regularization: reference vlln + vl_self_attention frozen and ready."
+            )
 
         del ref_model
         logger.info("regularization: reference backbone frozen and ready.")
@@ -1377,7 +1718,9 @@ class Gr00tN1d7(PreTrainedModel):
             self.base_vl_self_attention.eval()
         return self
 
-    def get_action(self, inputs: dict, options: dict[str, Any] | None = None) -> BatchFeature:
+    def get_action(
+        self, inputs: dict, options: dict[str, Any] | None = None
+    ) -> BatchFeature:
         """
         Generate actions using the complete model.
         """
@@ -1386,7 +1729,9 @@ class Gr00tN1d7(PreTrainedModel):
 
         # Forward through backbone
         backbone_outputs = self.backbone(backbone_inputs)
-        action_outputs = self.action_head.get_action(backbone_outputs, action_inputs, options)
+        action_outputs = self.action_head.get_action(
+            backbone_outputs, action_inputs, options
+        )
 
         return action_outputs
 
